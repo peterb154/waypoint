@@ -35,11 +35,17 @@ You judge whether a TOWN is worth stopping in. A town only passes if it has BOTH
 
 How to judge (small-town aware):
 - Prefer independent, owner-run places with character over polished resort/chain feel.
-- Rating matters most. Do NOT impose a hard review-count floor: a genuine gem in a
-  200-person town may have only 20-40 reviews. Use review count as a tiebreaker, not a gate.
-- Be MORE forgiving on food review counts than on lodging.
-- Read the reviews for honest signal, including negatives (bedbugs, smell, rude owner,
-  road noise, "tired"/"dated" done badly). Surface the real picture, not marketing.
+- The AGGREGATE rating is your primary signal. Do NOT impose a hard review-count floor: a
+  genuine gem in a 200-person town may have only 20-40 reviews. Use review count as a
+  tiebreaker, not a gate. Be MORE forgiving on food review counts than on lodging.
+- REVIEW SKEW (important): the `reviews` shown are at most 5 and are Google's "most
+  relevant" — they skew POSITIVE and cannot be sorted or expanded. They are NOT the full
+  picture. Each shown review carries its own `stars`, so compare them to the aggregate: when
+  the shown reviews are all 4-5 stars but the aggregate `rating` is mediocre (<= ~4.2) over
+  many ratings, assume a real negative tail you cannot see and TEMPER the synthesis.
+- Still mine the shown reviews for concrete negatives (bedbugs, smell, rude owner, road
+  noise, "tired"/"dated" done badly) and surface them — but the absence of negatives in a
+  rosy 5-review sample is NOT evidence a place is clean.
 - Some chains may have slipped past the upstream filter. If a place is clearly a chain,
   flag it independent=false and do not count it toward the town passing.
 
@@ -104,7 +110,11 @@ def _slim(p: dict) -> dict:
         "primary_type": p.get("primary_type"),
         "summary": p.get("summary"),
         "website": p.get("website"),
-        "reviews": [r.get("text") for r in p.get("reviews", []) if r.get("text")][:4],
+        "reviews": [
+            {"stars": r.get("rating"), "text": r.get("text")}
+            for r in p.get("reviews", [])
+            if r.get("text")
+        ][:5],
     }
 
 
