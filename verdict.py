@@ -63,10 +63,10 @@ Return ONLY valid JSON, no prose, in exactly this shape:
 """
 
 
-def _gather(lat: float, lon: float, included_types: list[str], top_n: int):
+def _gather(lat, lon, included_types, top_n, excluded_types=None):
     """Cheap search -> chain filter -> details on top survivors. Returns
     (survivors_with_details, dropped_chains)."""
-    candidates = places.search_nearby(lat, lon, included_types)
+    candidates = places.search_nearby(lat, lon, included_types, excluded_types=excluded_types)
     keep, dropped = filter_independents(candidates)
     # Rank survivors by rating (then review count) and pull details on the best few.
     keep.sort(key=lambda c: ((c.get("rating") or 0), (c.get("reviews") or 0)), reverse=True)
@@ -128,7 +128,9 @@ def main() -> int:
     print(f"\n=== {town} ===")
     print(f"geocoded: {display}  ({lat:.4f}, {lon:.4f})\n")
 
-    lodging, lodging_chains = _gather(lat, lon, places.LODGING_TYPES, TOP_N_LODGING)
+    lodging, lodging_chains = _gather(
+        lat, lon, places.LODGING_TYPES, TOP_N_LODGING, excluded_types=places.LODGING_EXCLUDE_TYPES
+    )
     food, food_chains = _gather(lat, lon, places.FOOD_TYPES, TOP_N_FOOD)
 
     print(f"lodging: {len(lodging)} independent survivors "

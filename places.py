@@ -32,6 +32,11 @@ LODGING_TYPES = [
 ]
 FOOD_TYPES = ["restaurant", "diner", "cafe", "meal_takeaway", "bar_and_grill"]
 
+# These carry the generic "lodging" type but aren't motorcyclist lodging — drop
+# them so they don't crowd out real motels/hotels/inns (e.g. a KOA outranking a
+# classic hotel). Keeps hotels, motels, inns, B&Bs, cottages, guest houses.
+LODGING_EXCLUDE_TYPES = ["campground", "rv_park", "mobile_home_park"]
+
 
 def _api_key() -> str:
     key = os.environ.get("GOOGLE_PLACES_API_KEY")
@@ -62,6 +67,7 @@ def search_nearby(
     included_types: list[str],
     radius_m: float = 10000.0,
     max_results: int = 20,
+    excluded_types: list[str] | None = None,
 ) -> list[dict]:
     """Cheap Nearby Search. Returns lightweight candidate dicts.
 
@@ -91,6 +97,8 @@ def search_nearby(
             }
         },
     }
+    if excluded_types:
+        body["excludedTypes"] = excluded_types
     resp = httpx.post(
         f"{PLACES_BASE}/places:searchNearby",
         headers={
