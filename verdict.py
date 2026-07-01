@@ -89,6 +89,14 @@ TOWN (3 pts):
 
 band: total >= 8 "route-worthy"; 6-7.99 "acceptable"; 4-5.99 "marginal"; < 4 "filter-out".
 
+LODGING GATE (this tool finds places to SLEEP and eat): if the town has NO suitable rider
+lodging at all — no motel / hotel / inn / lodge worth a look, only vacation rentals, private
+lofts, or nothing bookable for a one-night stop — the town is NOT an overnight candidate. Set
+all three lodging scores to 0, cap the TOTAL at 1.5, band "filter-out", and say in the reason
+that it's a dinner/charm stop only, not a place to sleep. Great food or charm does NOT rescue a
+town with nowhere to sleep. (A merely weak or B&B-only lodging still counts as lodging — the
+gate is only for NO bookable rider lodging.)
+
 == HOW TO READ REVIEWS (stance, not keywords) ==
 1. PRICE-AS-APOLOGY vs PRICE-AS-VALUE: "you can pay more for better" = apology (penalize);
    "best stay for the price, full stop" = value (reward). Same words, opposite stance.
@@ -195,7 +203,23 @@ def _judge(town: str, lodging: list[dict], food: list[dict], attractions: list[d
     # Models sometimes wrap JSON in ```; strip a fence if present.
     if text.startswith("```"):
         text = text.split("```", 2)[1].lstrip("json").strip()
-    return json.loads(text)
+    r = json.loads(text)
+    return _apply_lodging_gate(r)
+
+
+def _apply_lodging_gate(r: dict) -> dict:
+    """No bookable rider lodging => the town can't be an overnight stop. Cap it
+    near-zero regardless of how good the food/charm are (deterministic backstop
+    to the prompt's LODGING GATE)."""
+    s = r.get("scores", {})
+    lodging = sum(s.get(k) or 0 for k in ("independence_character", "price_tier", "review_quality"))
+    if lodging == 0 and (r.get("total") or 0) > 1.5:
+        r["total"] = 1.5
+        r["band"] = "filter-out"
+        r["reason"] = "No place to sleep (no rider lodging) — dinner/charm stop only. " + (
+            r.get("reason") or ""
+        )
+    return r
 
 
 def _slim(p: dict) -> dict:
