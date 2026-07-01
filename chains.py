@@ -37,6 +37,9 @@ LODGING_CHAINS = [
     "americas best value", "budget inn", "budget host", "passport inn",
     "national 9", "surestay", "vagabond inn", "shilo inn", "oyo", "signature inn",
     "magnuson", "scottish inns", "select inn", "town house motel",
+    # Radisson family
+    "radisson", "country inn & suites", "country inn and suites", "park inn",
+    "park plaza",
 ]
 
 # Restaurant / fast-food / chain-food blocklist. Food bar is more forgiving, but
