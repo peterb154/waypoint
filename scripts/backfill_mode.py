@@ -54,7 +54,7 @@ def main() -> int:
     print(f"{len(towns)} towns scored in '{src}' → backfilling '{dst}'"
           f"{' (dry run)' if dry else ''}\n")
 
-    done = skipped = 0
+    done = skipped = failed = 0
     for t in towns:
         label = f"{t['town']}, {t['state']}"
         if not refresh and cache.get_cached(conn, t["town"], t["state"], dst):
@@ -65,14 +65,21 @@ def main() -> int:
             print(f"  [would] {label}")
             done += 1
             continue
-        r = area.score_town(t["town"], t["lat"], t["lon"], dst)
-        cache.store_verdict(conn, t["town"], t["state"], t["geoid"], dst,
-                            t["lat"], t["lon"], r)
+        try:
+            r = area.score_town(t["town"], t["lat"], t["lon"], dst)
+            cache.store_verdict(conn, t["town"], t["state"], t["geoid"], dst,
+                                t["lat"], t["lon"], r)
+        except Exception as e:  # transient Places/Bedrock errors shouldn't kill the run
+            print(f"  [ERROR] {label:<24} {type(e).__name__}: {str(e)[:80]} — skipping")
+            conn.rollback()
+            failed += 1
+            continue
         print(f"  [score] {label:<24} {r.get('total')}/10  {r.get('band')}")
         done += 1
 
     conn.close()
-    print(f"\n{'would score' if dry else 'scored'}: {done}   skipped: {skipped}")
+    print(f"\n{'would score' if dry else 'scored'}: {done}   skipped: {skipped}   failed: {failed}")
+    print("(re-run to retry failures — idempotent)" if failed else "")
     return 0
 
 
