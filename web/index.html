@@ -76,9 +76,6 @@
   #cov-toggle { background: var(--panel); border: 1px solid #333; color: var(--muted);
                 padding: 7px 11px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px; }
   #cov-toggle.on { color: var(--ink); border-color: #5b9bd5; }
-  #camp-toggle { background: var(--panel); border: 1px solid #333; color: var(--muted);
-                 padding: 7px 11px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px; }
-  #camp-toggle.on { color: var(--ink); border-color: #2e7d32; }
   .camp-icon { font-size: 15px; text-align: center; line-height: 18px;
                filter: drop-shadow(0 1px 1px #000a); }
   .cgrid { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; font-size: 13px; margin: 10px 0; }
@@ -119,12 +116,12 @@
         <button data-v="moto" class="on">🏍 Moto</button>
         <button data-v="couple">🚗 Couple</button>
         <button data-v="lunch">🍴 Lunch</button>
+        <button data-v="camping">🏕 Camping</button>
       </div>
       <input id="find" placeholder="filter towns…" autocomplete="off" />
       <button id="locate" title="center on my location">📍</button>
       <button id="sweep-arm" title="arm, then tap the map to sweep an area">＋ Sweep</button>
       <button id="cov-toggle" class="on" title="show/hide areas we've swept">▦ Areas</button>
-      <button id="camp-toggle" title="show/hide camp spots (camping-db)">🏕 Camping</button>
     </div>
     <div id="sweepbox" hidden>
       <div class="sw-row"><b>Sweep an area</b><span id="sw-close">✕</span></div>
@@ -218,6 +215,7 @@ function render(r) {
 function draw(fit = true) {   // fit=false for background poll refreshes so they don't yank the view
   markers.forEach(m => map.removeLayer(m));
   markers = [];
+  if (view === "camping") return;   // camps live in campLayer, loaded by bounds via fetchCamps()
   const q = document.getElementById("find").value.toLowerCase();
   const hit = r => !q || (r.town + " " + r.state).toLowerCase().includes(q);
   const lunch = view === "lunch";
@@ -250,6 +248,13 @@ function draw(fit = true) {   // fit=false for background poll refreshes so they
 
 function legend() {
   const box = document.getElementById("legend");
+  if (view === "camping") {
+    box.innerHTML =
+      `<div class="leg-head">camp spots (camping-db)</div>` +
+      `<b><span class="dot" style="background:#2e7d32"></span>🏕 click a pin for details</b>` +
+      `<b style="color:var(--muted)">zoom in to load camps</b>`;
+    return;
+  }
   if (view === "lunch") {
     box.innerHTML =
       `<div class="leg-head">local food (lunch stops)</div>` +
@@ -277,6 +282,7 @@ function legend() {
 document.querySelectorAll("#view button").forEach(btn => btn.onclick = () => {
   view = btn.dataset.v;
   document.querySelectorAll("#view button").forEach(b => b.classList.toggle("on", b === btn));
+  if (view === "camping") fetchCamps(); else campLayer.clearLayers();
   legend(); draw();
 });
 
@@ -385,17 +391,17 @@ $("cov-toggle").onclick = () => {
 };
 
 // ---- camping layer (sibling camping-db, via same-origin /api/camps proxy) ----
-// Additive overlay: layers on top of any view, loads camps for the current map
-// bounds (pan-to-load). Below CAMP_MINZOOM the bbox spans too many camps, so we
-// wait for a zoom-in rather than dumping thousands of pins.
-let showCamps = false, campFetchT = null;
+// The "camping" view loads camps for the current map bounds (pan-to-load).
+// Below CAMP_MINZOOM the bbox spans too many camps, so we wait for a zoom-in
+// rather than dumping thousands of pins.
+let campFetchT = null;
 const campLayer = L.layerGroup().addTo(map);
 const CAMP_MINZOOM = 8;
 const CAMP_TYPE = { NF: "National Forest", BLM: "BLM", COE: "Corps of Engineers",
   SP: "State Park", SF: "State Forest", CP: "County Park", RV: "RV Park", MP: "Municipal Park" };
 
 function fetchCamps() {
-  if (!showCamps) return;
+  if (view !== "camping") return;
   if (map.getZoom() < CAMP_MINZOOM) { campLayer.clearLayers(); return; }
   const b = map.getBounds();
   const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map(n => n.toFixed(4)).join(",");
@@ -428,12 +434,7 @@ function renderCamp(c) {
     </div>`;
 }
 
-$("camp-toggle").onclick = () => {
-  showCamps = !showCamps;
-  $("camp-toggle").classList.toggle("on", showCamps);
-  if (showCamps) fetchCamps(); else campLayer.clearLayers();
-};
-map.on("moveend", () => { if (showCamps) { clearTimeout(campFetchT); campFetchT = setTimeout(fetchCamps, 300); } });
+map.on("moveend", () => { if (view === "camping") { clearTimeout(campFetchT); campFetchT = setTimeout(fetchCamps, 300); } });
 // Sweeping is an explicit mode: arm it, then one map tap opens the sweep box.
 // Without this, every stray tap (easy to do on touch) stole the tap from a town bubble.
 let armed = false;
