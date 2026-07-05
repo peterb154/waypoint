@@ -322,6 +322,7 @@ function drawCircle() {
 function closeSweep() {
   $("sweepbox").hidden = true;
   if (sweepCircle) { map.removeLayer(sweepCircle); sweepCircle = null; }
+  setArmed(false);   // ends placement mode (drops crosshair); ✕ and enqueue both call this
 }
 function preview() {
   clearTimeout(prevT);
@@ -487,8 +488,10 @@ function askCamper(campId, btn) {
 }
 
 map.on("moveend", () => { if (view === "camping") { clearTimeout(campFetchT); campFetchT = setTimeout(fetchCamps, 300); } });
-// Sweeping is an explicit mode: arm it, then one map tap opens the sweep box.
-// Without this, every stray tap (easy to do on touch) stole the tap from a town bubble.
+// Sweeping is an explicit mode: arm it, then tap the map to place the circle.
+// Placement mode stays active (crosshair, armed) so each tap re-centers the
+// circle — closeSweep() (✕ / enqueue) ends it. Guards stray taps on touch, and
+// town bubbles stopPropagation so tapping a town never repositions the circle.
 let armed = false;
 function setArmed(on) {
   armed = on;
@@ -504,7 +507,7 @@ function showPanel(on) {
   map.invalidateSize();  // panel width changed — let Leaflet refill the map
 }
 $("panel-close").onclick = () => showPanel(false);
-map.on("click", e => { if (armed) { setArmed(false); openSweep(e.latlng); } });
+map.on("click", e => { if (armed) openSweep(e.latlng); });   // stays armed → tap again to re-center
 // keep clicks on the UI overlays from falling through to the map
 ["sweepbox", "bar", "legend", "queue"].forEach(id => {
   const el = $(id);
