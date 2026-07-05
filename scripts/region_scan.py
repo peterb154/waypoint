@@ -74,7 +74,13 @@ def gather_attributed(town, lat, lon, included, top_n, excluded=None):
         if c.get("lat") is None or nearest_anchor(c["lat"], c["lon"]) == town
     ]
     keep, _ = filter_independents(mine)
-    keep.sort(key=lambda c: ((c.get("rating") or 0), (c.get("reviews") or 0)), reverse=True)
+    keep.sort(
+        key=lambda c: (
+            places.weighted_rating(c.get("rating"), c.get("reviews")),
+            (c.get("reviews") or 0),
+        ),
+        reverse=True,
+    )
     out = []
     for c in keep[:top_n]:
         try:

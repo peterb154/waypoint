@@ -55,6 +55,24 @@ ATTRACTION_TYPES = [
 ]
 
 
+# Ranking prior for weighted_rating(). A raw rating sort lets a tiny-sample
+# 5.0★/8-review cabin outrank a 4.4★/682-review classic hotel, and the top-N
+# cutoff then drops the hotel before it is ever judged. weighted_rating() is a
+# Bayesian shrinkage average: pull each rating toward RATING_PRIOR by an amount
+# that fades as review volume grows. High-volume places barely move; thin-sample
+# places are discounted for uncertainty — but there is NO hard review floor, so a
+# genuine small-town gem is only nudged, not buried.
+RATING_PRIOR = 3.8  # assumed mean rating (Google lodging/food ratings skew high)
+RATING_CONFIDENCE = 25  # review count at which we half-trust the raw rating
+
+
+def weighted_rating(rating: float | None, reviews: int | None) -> float:
+    """Volume-weighted rating for ranking survivors. (v*R + m*C) / (v + m)."""
+    r = rating or 0.0
+    v = reviews or 0
+    return (v * r + RATING_CONFIDENCE * RATING_PRIOR) / (v + RATING_CONFIDENCE)
+
+
 def _api_key() -> str:
     key = os.environ.get("GOOGLE_PLACES_API_KEY")
     if not key:

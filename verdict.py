@@ -177,8 +177,15 @@ def _gather(lat, lon, included_types, top_n, excluded_types=None):
     (survivors_with_details, dropped_chains)."""
     candidates = places.search_nearby(lat, lon, included_types, excluded_types=excluded_types)
     keep, dropped = filter_independents(candidates)
-    # Rank survivors by rating (then review count) and pull details on the best few.
-    keep.sort(key=lambda c: ((c.get("rating") or 0), (c.get("reviews") or 0)), reverse=True)
+    # Rank survivors by a volume-weighted rating (a tiny-sample gem shouldn't bury
+    # a high-review classic) and pull details on the best few.
+    keep.sort(
+        key=lambda c: (
+            places.weighted_rating(c.get("rating"), c.get("reviews")),
+            (c.get("reviews") or 0),
+        ),
+        reverse=True,
+    )
     detailed = []
     for c in keep[:top_n]:
         try:
