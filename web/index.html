@@ -80,6 +80,14 @@
                filter: drop-shadow(0 1px 1px #000a); }
   .cgrid { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; font-size: 13px; margin: 10px 0; }
   .cgrid .ck { color: var(--muted); }
+  .cblk { margin: 8px 0; font-size: 13px; }
+  .cblk b { color: var(--muted); font-weight: 400; display: block; margin-bottom: 2px; }
+  .cmut { color: var(--muted); font-size: 12px; margin: 6px 0; }
+  .ask { margin-top: 12px; background: #2e7d32; color: #fff; border: 0; padding: 8px 12px;
+         border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px; }
+  .ask[disabled] { background: #3a4552; cursor: default; }
+  .enrich { margin-top: 10px; font-size: 13px; line-height: 1.5; background: #171c22;
+            border: 1px solid #2a323b; border-radius: 8px; padding: 10px 12px; }
   #map.arming { cursor: crosshair; }
   #queue { position: absolute; z-index: 500; right: 10px; bottom: 14px; width: 230px;
            background: rgba(20,24,29,.92); border: 1px solid #2a323b; border-radius: 8px;
@@ -416,22 +424,66 @@ function fetchCamps() {
   }).catch(() => {});
 }
 
+const WATER = { DW: "drinking water", NW: "no water" };
+
+// Click shows the list data instantly, then swaps in the full detail once the
+// per-camp fetch returns (amenities, directions, notes + the Ask Camper button).
 function renderCamp(c) {
   showPanel(true);
+  renderCampCard(c, true);
+  fetch(`${API}/api/camps/${c.camp_id}`).then(r => r.json())
+    .then(full => renderCampCard(full && full.camp_id ? full : c, false))  // fall back to list data
+    .catch(() => renderCampCard(c, false));
+}
+
+function renderCampCard(c, loading) {
   const label = CAMP_TYPE[c.type] || c.type || "camp";
   const dist = me ? ` · ${Math.round(distMi(me.lat, me.lon, c.lat, c.lon))} mi from you` : "";
+  const water = c.water ? (WATER[c.water] || c.water) : null;
   const pair = (k, v) => (v != null && v !== "") ? `<span class="ck">${k}</span><span>${v}</span>` : "";
+  const amen = ["toilets", "showers", "dump", "hookups", "pets", "rv_length"]
+    .filter(k => c[k] != null && c[k] !== "").map(k => `${k}: ${c[k]}`).join(" · ");
+  const block = (title, txt) => txt ? `<div class="cblk"><b>${title}</b><div>${txt}</div></div>` : "";
   document.getElementById("panel-body").innerHTML = `
     <h1>🏕 ${c.camp || c.name || "Campground"}</h1>
     <div class="sub">${label}${c.town ? " · " + c.town : ""}, ${c.state || ""}${dist} · ${(+c.lat).toFixed(5)}, ${(+c.lon).toFixed(5)}</div>
     <div class="cgrid">
-      ${pair("fee", c.fee || "free")}${pair("sites", c.sites)}${pair("water", c.water)}
-      ${pair("devel", c.devel)}${pair("season", c.season)}
+      ${pair("fee", c.fee || "free")}${pair("sites", c.sites)}${pair("water", water)}
+      ${pair("devel", c.devel)}${pair("season", c.season)}${pair("elev", c.elev)}
+      ${pair("phone", c.phone)}${pair("reserve", c.reservations)}
     </div>
+    ${amen ? `<div class="cmut">${amen}</div>` : ""}
+    ${block("Directions", c.directions)}${block("Notes", c.comments)}
     <div class="links">
       <a href="https://www.google.com/maps/search/?api=1&query=${c.lat},${c.lon}" target="_blank">Maps ↗</a>
       ${c.url ? ` · <a href="${c.url}" target="_blank">Site ↗</a>` : ""}
-    </div>`;
+    </div>
+    ${loading ? `<div class="cmut" style="margin-top:10px">loading details…</div>`
+      : `<button id="ask-camper" class="ask">✨ Ask Camper</button><div id="camp-enrich"></div>`}`;
+  if (!loading) {
+    const btn = document.getElementById("ask-camper");
+    if (btn) btn.onclick = () => askCamper(c.camp_id, btn);
+  }
+}
+
+function askCamper(campId, btn) {
+  btn.disabled = true;
+  btn.textContent = "Asking Camper… (~15s)";
+  const out = document.getElementById("camp-enrich");
+  fetch(`${API}/api/camps/${campId}/enrich`, { method: "POST" }).then(r => r.json())
+    .then(d => {
+      if (d.summary) {
+        out.innerHTML = `<div class="enrich">${d.summary.replace(/\n/g, "<br>")}</div>`;
+        btn.remove();
+      } else {
+        btn.disabled = false; btn.textContent = "✨ Ask Camper";
+        out.innerHTML = `<div class="cmut">${d.error || "No answer."}</div>`;
+      }
+    })
+    .catch(() => {
+      btn.disabled = false; btn.textContent = "✨ Ask Camper";
+      out.innerHTML = `<div class="cmut">Couldn't reach Camper.</div>`;
+    });
 }
 
 map.on("moveend", () => { if (view === "camping") { clearTimeout(campFetchT); campFetchT = setTimeout(fetchCamps, 300); } });

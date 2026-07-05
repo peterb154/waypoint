@@ -87,6 +87,33 @@ def camps(bbox: str, limit: int = 1000):
         return []
 
 
+@app.get("/api/camps/{camp_id}")
+def camp_detail(camp_id: int):
+    """Proxy one camp's full detail. Returns {} on upstream trouble so the card
+    can fall back to the sparse list data."""
+    try:
+        resp = httpx.get(f"{CAMPING_API_URL}/api/camps/{camp_id}", timeout=8.0)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"[camps] detail error: {type(e).__name__}: {str(e)[:100]}")
+        return {}
+
+
+@app.post("/api/camps/{camp_id}/enrich")
+def camp_enrich(camp_id: int, refresh: bool = False):
+    """Proxy the 'Ask Camper' LLM enrichment. Long timeout — a cache miss runs
+    the agent (seconds). Returns an error marker (not 500) so the UI can say so."""
+    try:
+        resp = httpx.post(f"{CAMPING_API_URL}/api/camps/{camp_id}/enrich",
+                          params={"refresh": refresh}, timeout=90.0)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"[camps] enrich error: {type(e).__name__}: {str(e)[:100]}")
+        return {"summary": None, "error": "Couldn't reach Camper right now."}
+
+
 @app.get("/api/preview")
 def preview(lat: float, lon: float, radius: float):
     """How many towns fall in the circle, and how many (town, mode) scoring calls
