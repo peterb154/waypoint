@@ -259,13 +259,37 @@ hotel's own restaurant.
     food or charm. A weak or B&B-only town still *counts* as lodging; the
     gate is only for zero bookable lodging. (St. Marys KS, Dallas SD.)
 
+## Reject hunt — "can it say no?" (2026-07-05, `scripts/reject_hunt.py`)
+
+Batched a real I-80 corridor (NE→WY, 20 towns, not cherry-picked), ranked
+ascending by weakest best-independent-lodging. The band range came out fully
+populated, so the "still no FAIL observed" open item is closed — the tool
+reliably says no.
+
+- **13/20 filter-out**, mostly via the **lodging gate** (only vacation rentals /
+  Airbnb / event venues → no bookable rider bed).
+- **Healthy gradient above the gate:** Cozad 4.5 / Big Springs 5.0 / Lexington 5.5
+  (marginal) → Ogallala 7.0 (acceptable) → Gothenburg / Sidney / Kimball 8.0
+  (route-worthy). Weak-but-real motels get graded down without being zeroed.
+- **Spot-checked the tail for false negatives — none.** Maxwell is a genuine
+  FAIL (search found 1 unrated "Cabins", 0 chains dropped, 0 food — nothing to
+  miss). Paxton's only "lodging" is a wedding venue → gate.
+
+**Mode-gate learning (confirmed, not a bug):** several moto-mode FAILs are
+B&B/Airbnb-only towns that correctly PASS in `--couple`. Potter NE gates in moto
+(1912 boarding house) but scores **8.5 route-worthy** for a couple; Gibbon NE
+gates in moto (Airbnb house) but scores **7.0** for a couple. The gate is
+mode-appropriate — it rejects intimate lodging *for a group of riders*, not
+categorically. (Gibbon's couple-mode lodging also earned only review_quality
+0.5 on a 5.0★/2-review Airbnb — the skew/volume tempering doing its job.)
+
 ## Still needed
-- **Reject variety: covered (for now).** Three distinct failure modes are
-  confirmed — workforce/no-charm (Alliance NE 3.5), no-bookable-lodging
-  hunting town (Dallas SD 1.5), and destination-food-but-no-bed (St. Marys
-  KS 1.5). Still worth finding: a town that scores fine on lodging + charm
-  but has genuinely *dead food*, and a tourist-trap that's all chains behind
-  a charming facade.
+- **Reject variety: well covered.** Failure modes confirmed — workforce/no-charm
+  (Alliance NE 3.5), no-bookable-lodging hunting town (Dallas SD 1.5),
+  destination-food-but-no-bed (St. Marys KS 1.5), dead nothing-town (Maxwell NE
+  0.0), and wedding-venue-as-lodging (Paxton NE 0.0). Still worth finding: a town
+  that scores fine on lodging + charm but has genuinely *dead food*, and a
+  tourist-trap that's all chains behind a charming facade.
 
 ---
 
@@ -349,6 +373,8 @@ Quality (1), Food (2), Rec = Recency (1), Chrm = Charm (2), Rid = Riding (1).
 | Alliance, NE | 1 | 0 | 0.5 | 1 | 1 | 0 | 0 | **3.5** | filter-out | Rainbow Motel |
 | Dallas, SD | 0 | 0 | 0 | (1.5) | 1 | (0) | 0 | **1.5** | filter-out | GATE — hunting lodges, no bed |
 | St. Marys, KS | 0 | 0 | 0 | (2) | 1 | (1.5) | 0.5 | **1.5** | filter-out | GATE — vacation rentals only |
+| Maxwell, NE | 0 | 0 | 0 | 0 | 0 | 0 | 0 | **0.0** | filter-out | true FAIL — 1 unrated "Cabins", 0 food |
+| Paxton, NE | 0 | 0 | 0 | (1.5) | 1 | (1) | 0.5 | **0.0** | filter-out | GATE — Hanging H is a wedding venue |
 
 Notes:
 - The tool scores the town's best *found* suitable lodging, which may differ from
