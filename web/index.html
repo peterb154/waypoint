@@ -15,9 +15,14 @@
   #app { display: flex; height: 100%; }
   #map { flex: 1; background: var(--bg); }
   #panel {
-    width: 380px; max-width: 90vw; background: var(--panel); overflow-y: auto;
-    padding: 16px 18px 40px; border-left: 1px solid #000;
+    width: 380px; max-width: 90vw; background: var(--panel);
+    border-left: 1px solid #000; display: flex; flex-direction: column;
   }
+  #panel.hidden { display: none; }
+  #panel-close { align-self: flex-end; flex: none; background: none; border: 0;
+    color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; padding: 8px 12px; }
+  #panel-close:hover { color: var(--ink); }
+  #panel-body { flex: 1; overflow-y: auto; padding: 4px 18px 40px; }
   #panel h1 { font-size: 16px; margin: 0 0 2px; }
   #panel .sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
   .chip { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px;
@@ -83,6 +88,7 @@
   @media (max-width: 720px) {
     #app { flex-direction: column; }
     #map { height: 55vh; flex: none; }
+    #app.nopanel #map { height: 100%; }
     #panel { width: 100%; max-width: 100%; height: 45vh; border-left: none; border-top: 1px solid #000; }
   }
 </style>
@@ -115,7 +121,10 @@
     </div>
     <div id="legend"></div>
   </div>
-  <div id="panel"><div class="empty">Click a town to see its verdict.</div></div>
+  <div id="panel">
+    <button id="panel-close" title="close · see the full map">✕</button>
+    <div id="panel-body"><div class="empty">Click a town to see its verdict.</div></div>
+  </div>
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
@@ -173,7 +182,8 @@ function render(r) {
      ${plinks(f.name, f.lat, f.lon)}</div>`).join("");
   const lodging = bl.name ? `<div class="card"><h3>🛏 ${bl.name} ${bl.soft_brand ? "· soft-brand" : ""}</h3>
       <div class="syn">${bl.synthesis || ""}</div>${plinks(bl.name, bl.lat, bl.lon)}</div>` : "";
-  document.getElementById("panel").innerHTML = `
+  showPanel(true);
+  document.getElementById("panel-body").innerHTML = `
     <h1>${r.town}, ${r.state}</h1>
     <div class="sub">${r.mode || "moto"} · evaluated ${(r.evaluated_at || "").slice(0,10)}${me ? ` · ${Math.round(distMi(me.lat, me.lon, r.lat, r.lon))} mi from you` : ""} · ${coord(r.lat, r.lon)}</div>
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
@@ -324,6 +334,14 @@ function setArmed(on) {
   $("map").classList.toggle("arming", on);
 }
 $("sweep-arm").onclick = () => setArmed(!armed);
+
+// Close the details panel to see the map full-screen; a town click reopens it.
+function showPanel(on) {
+  $("panel").classList.toggle("hidden", !on);
+  $("app").classList.toggle("nopanel", !on);
+  map.invalidateSize();  // panel width changed — let Leaflet refill the map
+}
+$("panel-close").onclick = () => showPanel(false);
 map.on("click", e => { if (armed) { setArmed(false); openSweep(e.latlng); } });
 // keep clicks on the UI overlays from falling through to the map
 ["sweepbox", "bar", "legend"].forEach(id => {
