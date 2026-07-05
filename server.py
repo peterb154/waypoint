@@ -12,6 +12,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +26,10 @@ load_dotenv(override=True)
 # Every sweep scores a town in BOTH trip modes, so all map views (moto/couple/
 # lunch) populate from one sweep. Cached (town, mode) pairs are skipped.
 SWEEP_MODES = ("moto", "couple")
+
+# Sibling camping-db service — proxied (below) so the map can pull camp spots
+# same-origin without CORS. Override for local dev.
+CAMPING_API_URL = os.environ.get("CAMPING_API_URL", "https://camping.epetersons.com").rstrip("/")
 
 # Towns scored concurrently per job. score_town is I/O-bound (Places + Bedrock),
 # so a small pool is a big speedup; kept modest to respect upstream rate limits.
@@ -65,6 +70,21 @@ def verdicts():
         rows = [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
     conn.close()
     return rows
+
+
+@app.get("/api/camps")
+def camps(bbox: str, limit: int = 1000):
+    """Proxy camp spots from the sibling camping-db (same-origin → no CORS).
+    Degrades to [] on any upstream problem so the map layer just shows nothing
+    rather than breaking."""
+    try:
+        resp = httpx.get(f"{CAMPING_API_URL}/api/camps",
+                         params={"bbox": bbox, "limit": limit}, timeout=8.0)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"[camps] upstream error: {type(e).__name__}: {str(e)[:100]}")
+        return []
 
 
 @app.get("/api/preview")
