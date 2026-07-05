@@ -21,15 +21,22 @@ from verdict import TOP_N_FOOD, TOP_N_LODGING, _gather, _judge
 load_dotenv(override=True)
 
 
-def score_town(name: str, lat: float, lon: float, mode: str) -> dict:
-    """Independent per-town score (cacheable): its own lodging/food within radius."""
+def score_town(name: str, lat: float, lon: float, mode: str, anchors=None) -> dict:
+    """Independent per-town score (cacheable): its own lodging/food within radius.
+
+    anchors: [(town_name, lat, lon), ...] of nearby reference towns. When given,
+    each venue is attributed to its nearest anchor, so a town only scores on the
+    venues physically closest to it (a neighbour's motel/restaurant/attraction no
+    longer counts here). None = no attribution (single-town CLI use)."""
+    keep_here = _nearest_filter(name, lat, lon, anchors)
     lodging_types = list(places.LODGING_TYPES)
     lodging_excl = list(places.LODGING_EXCLUDE_TYPES)
     if mode == "moto":
         lodging_types = [t for t in lodging_types if t not in places.LODGING_BNB_TYPES]
         lodging_excl += places.LODGING_BNB_TYPES
-    lodging, _ = _gather(lat, lon, lodging_types, TOP_N_LODGING, excluded_types=lodging_excl)
-    food, _ = _gather(lat, lon, places.FOOD_TYPES, TOP_N_FOOD)
+    lodging, _ = _gather(lat, lon, lodging_types, TOP_N_LODGING,
+                         excluded_types=lodging_excl, keep_here=keep_here)
+    food, _ = _gather(lat, lon, places.FOOD_TYPES, TOP_N_FOOD, keep_here=keep_here)
     if not lodging and not food:
         return {
             "total": 0, "band": "filter-out", "scores": {}, "best_lodging": None,
@@ -38,6 +45,9 @@ def score_town(name: str, lat: float, lon: float, mode: str) -> dict:
     attractions = places.search_nearby(
         lat, lon, places.ATTRACTION_TYPES, radius_m=8000.0, max_results=15
     )
+    if keep_here is not None:
+        attractions = [a for a in attractions
+                       if a.get("lat") is None or keep_here(a["lat"], a["lon"])]
     r = _judge(name, lodging, food, attractions, mode)
     # Tag every named place with its coords (matched from the detail lists), for
     # dedupe + so each location gets a Street View link / GPS coords in the UI.
@@ -62,6 +72,9 @@ def area_search(center: str, radius_mi: float, mode: str, limit: int | None = No
 
     conn = cache.connect()
     candidates = cache.towns_within(conn, lat, lon, radius_mi)
+    # Attribution set: every reference town in the area (before --limit), so each
+    # venue is credited to its nearest town and neighbours don't share venues.
+    anchors = [(c["name"], c["lat"], c["lon"]) for c in candidates]
     if limit:
         candidates = candidates[:limit]
     print(f"{len(candidates)} candidate towns from reference table\n")
@@ -74,7 +87,7 @@ def area_search(center: str, radius_mi: float, mode: str, limit: int | None = No
             r, src = cached, "cache"
             hits += 1
         else:
-            r = score_town(c["name"], c["lat"], c["lon"], mode)
+            r = score_town(c["name"], c["lat"], c["lon"], mode, anchors=anchors)
             cache.store_verdict(conn, c["name"], c["state"], c["geoid"], mode,
                                 c["lat"], c["lon"], r)
             src = "scored"
@@ -96,6 +109,22 @@ def area_search(center: str, radius_mi: float, mode: str, limit: int | None = No
         also = f"   (+{len(others)} satellites: {', '.join(others)})" if others else ""
         print(f"{r.get('total'):>4}/10  [{r.get('band'):<12}] {c['name']+', '+c['state']:<22}"
               f" ({c['mi']:.0f} mi)  {blname or ''}{also}")
+
+
+def _nearest_filter(name, lat, lon, anchors):
+    """Build keep(vlat, vlon) -> True iff `name` is the nearest anchor town to the
+    venue. Guarantees the town itself is an anchor (else it would keep nothing).
+    Returns None when no anchors are given (attribution disabled)."""
+    if not anchors:
+        return None
+    pts = list(anchors)
+    if not any(a[0] == name for a in pts):
+        pts.append((name, lat, lon))
+
+    def keep(vlat, vlon):
+        return min(pts, key=lambda a: _haversine_mi(vlat, vlon, a[1], a[2]))[0] == name
+
+    return keep
 
 
 def _haversine_mi(lat1, lon1, lat2, lon2):

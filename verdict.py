@@ -172,10 +172,17 @@ spot's rating) — not a restatement of the rubric. This is the explanation the 
 """
 
 
-def _gather(lat, lon, included_types, top_n, excluded_types=None):
-    """Cheap search -> chain filter -> details on top survivors. Returns
-    (survivors_with_details, dropped_chains)."""
+def _gather(lat, lon, included_types, top_n, excluded_types=None, keep_here=None):
+    """Cheap search -> nearest-town filter -> chain filter -> details on top
+    survivors. Returns (survivors_with_details, dropped_chains).
+
+    keep_here(vlat, vlon) -> bool, when given, keeps only venues whose nearest
+    reference town is this one, so neighbours don't borrow each other's venues.
+    """
     candidates = places.search_nearby(lat, lon, included_types, excluded_types=excluded_types)
+    if keep_here is not None:
+        candidates = [c for c in candidates
+                      if c.get("lat") is None or keep_here(c["lat"], c["lon"])]
     keep, dropped = filter_independents(candidates)
     # Rank survivors by a volume-weighted rating (a tiny-sample gem shouldn't bury
     # a high-review classic) and pull details on the best few.

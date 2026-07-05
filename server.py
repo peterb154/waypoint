@@ -192,17 +192,19 @@ def _claim_next(conn):
         return cur.fetchone()
 
 
-def _score_modes(t, modes):
+def _score_modes(t, modes, anchors):
     """Pure API work (no DB) so it's safe to run in a pool thread: score this town
-    in each still-needed mode. Returns [(mode, verdict), ...]."""
+    in each still-needed mode. Returns [(mode, verdict), ...]. `anchors` is the
+    area's town set for nearest-town venue attribution (no neighbour borrowing)."""
     out = []
     for mode in modes:
-        out.append((mode, area.score_town(t["name"], t["lat"], t["lon"], mode)))
+        out.append((mode, area.score_town(t["name"], t["lat"], t["lon"], mode, anchors=anchors)))
     return out
 
 
 def _run_job(conn, job_id, lat, lon, radius):
     towns = cache.towns_within(conn, lat, lon, radius)
+    anchors = [(t["name"], t["lat"], t["lon"]) for t in towns]
     with conn.cursor() as cur:
         cur.execute("UPDATE sweep_jobs SET towns_total = %s WHERE id = %s", [len(towns), job_id])
     # Which modes each town still needs (cache check on the main thread, before the pool).
@@ -212,7 +214,7 @@ def _run_job(conn, job_id, lat, lon, radius):
     # the APIs; all DB writes stay here on the main thread → one connection, no races.
     done = 0
     with ThreadPoolExecutor(max_workers=SWEEP_CONCURRENCY) as ex:
-        futs = {ex.submit(_score_modes, t, modes): t for t, modes in work}
+        futs = {ex.submit(_score_modes, t, modes, anchors): t for t, modes in work}
         for fut in as_completed(futs):
             t = futs[fut]
             try:
