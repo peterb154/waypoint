@@ -207,7 +207,7 @@ function render(r) {
     ${r.tip ? `<div class="tip">💡 ${r.tip}</div>` : ""}`;
 }
 
-function draw() {
+function draw(fit = true) {   // fit=false for background poll refreshes so they don't yank the view
   markers.forEach(m => map.removeLayer(m));
   markers = [];
   const q = document.getElementById("find").value.toLowerCase();
@@ -237,7 +237,7 @@ function draw() {
     m.on("click", (ev) => { L.DomEvent.stopPropagation(ev); render(r); });
     markers.push(m);
   });
-  if (shown.length && !q) map.fitBounds(L.latLngBounds(shown.map(r => [r.lat, r.lon])).pad(0.2));
+  if (fit && shown.length && !q) map.fitBounds(L.latLngBounds(shown.map(r => [r.lat, r.lon])).pad(0.2));
 }
 
 function legend() {
@@ -330,7 +330,7 @@ function refreshJobs() {
   return fetch(`${API}/api/sweep_jobs`).then(r => r.json()).then(js => {
     jobs = js; renderQueue(); drawCoverage();
     const active = jobs.some(j => j.status === "pending" || j.status === "running");
-    if (active || lastActive) load();   // lastActive catches the final done → pull the last towns
+    if (active || lastActive) load(false);   // lastActive catches the final done → pull the last towns (no refit)
     lastActive = active;
     if (active) startPolling(); else stopPolling();
   }).catch(() => {});
@@ -422,9 +422,9 @@ function locateMe(pan) {
 document.getElementById("locate").onclick = () => me ? map.setView([me.lat, me.lon], 9) : locateMe(true);
 locateMe(false);   // silent attempt on load (browser prompts once); button re-centers after
 
-function load() {
+function load(fit = true) {
   return fetch(`${API}/api/verdicts`).then(r => r.json())
-    .then(data => { rows = data; legend(); draw(); })
+    .then(data => { rows = data; legend(); draw(fit); })
     .catch(e => { document.getElementById("panel-body").innerHTML =
       `<div class="empty">Couldn't reach the server.<br><br>${e}</div>`; });
 }
