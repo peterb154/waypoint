@@ -73,7 +73,18 @@
   #sweep-arm { background: var(--panel); border: 1px solid #333; color: var(--ink);
                padding: 7px 11px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px; }
   #sweep-arm.on { background: #2b6cb0; border-color: #2b6cb0; color: #fff; font-weight: 600; }
+  #cov-toggle { background: var(--panel); border: 1px solid #333; color: var(--muted);
+                padding: 7px 11px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px; }
+  #cov-toggle.on { color: var(--ink); border-color: #5b9bd5; }
   #map.arming { cursor: crosshair; }
+  #queue { position: absolute; z-index: 500; right: 10px; bottom: 14px; width: 230px;
+           background: rgba(20,24,29,.92); border: 1px solid #2a323b; border-radius: 8px;
+           padding: 8px 10px; font-size: 12px; }
+  #queue .qh { color: var(--muted); font-size: 11px; margin-bottom: 5px; }
+  #queue .qrow { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  #queue .qrow .qx { margin-left: auto; color: var(--muted); cursor: pointer; }
+  #queue .qbar { height: 4px; background: #303a44; border-radius: 3px; overflow: hidden; margin-top: 2px; }
+  #queue .qbar > i { display: block; height: 100%; background: #5b9bd5; }
   #sweepbox { position:absolute; z-index:600; top:52px; left:10px; width:230px; background:var(--panel);
               border:1px solid #333; border-radius:8px; padding:10px 12px; font-size:13px; }
   #sweepbox .sw-row { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:6px 0; }
@@ -105,6 +116,7 @@
       <input id="find" placeholder="filter towns…" autocomplete="off" />
       <button id="locate" title="center on my location">📍</button>
       <button id="sweep-arm" title="arm, then tap the map to sweep an area">＋ Sweep</button>
+      <button id="cov-toggle" class="on" title="show/hide areas we've swept">▦ Areas</button>
     </div>
     <div id="sweepbox" hidden>
       <div class="sw-row"><b>Sweep an area</b><span id="sw-close">✕</span></div>
@@ -112,13 +124,11 @@
       <div class="sw-row"><span>radius</span>
         <input id="sw-radius" type="range" min="10" max="60" step="5" value="30" />
         <span id="sw-rlabel">30 mi</span></div>
-      <div class="sw-row"><span>mode</span>
-        <select id="sw-mode"><option value="moto">moto · no B&amp;B</option>
-          <option value="couple">couple</option></select></div>
       <div id="sw-preview" class="sw-mut">…</div>
-      <button id="sw-go">Sweep</button>
-      <div id="sw-prog" class="sw-mut"></div>
+      <div class="sw-mut" style="font-size:11px">scores both moto &amp; couple</div>
+      <button id="sw-go">Add to queue</button>
     </div>
+    <div id="queue" hidden></div>
     <div id="legend"></div>
   </div>
   <div id="panel">
@@ -274,7 +284,7 @@ document.getElementById("panel").addEventListener("click", (e) => {
 const $ = id => document.getElementById(id);
 const BANDCLR = { "route-worthy": "#2e7d32", "acceptable": "#1565c0",
                   "marginal": "#f9a825", "filter-out": "#b0392b" };
-let sweepCircle = null, sweepCenter = null, es = null, prevT;
+let sweepCircle = null, sweepCenter = null, prevT;
 
 function openSweep(latlng) {
   sweepCenter = latlng;
@@ -287,43 +297,83 @@ function drawCircle() {
   sweepCircle = L.circle(sweepCenter, { radius: (+$("sw-radius").value) * 1609.34,
     color: "#2b6cb0", weight: 1, fillColor: "#2b6cb0", fillOpacity: 0.08 }).addTo(map);
 }
-function qp() { return new URLSearchParams({ lat: sweepCenter.lat, lon: sweepCenter.lng,
-  radius: $("sw-radius").value, mode: $("sw-mode").value }); }
+function closeSweep() {
+  $("sweepbox").hidden = true;
+  if (sweepCircle) { map.removeLayer(sweepCircle); sweepCircle = null; }
+}
 function preview() {
   clearTimeout(prevT);
   prevT = setTimeout(() => {
     $("sw-preview").textContent = "…";
-    fetch(`${API}/api/preview?${qp()}`).then(r => r.json())
-      .then(d => $("sw-preview").innerHTML =
-        `${d.towns} towns · <b>${d.to_score} new</b>${d.cached ? ` · ${d.cached} cached` : ""}`)
+    const qs = new URLSearchParams({ lat: sweepCenter.lat, lon: sweepCenter.lng, radius: $("sw-radius").value });
+    fetch(`${API}/api/preview?${qs}`).then(r => r.json())
+      .then(d => $("sw-preview").innerHTML = `${d.towns} towns · <b>${d.to_score} to score</b>`)
       .catch(() => $("sw-preview").textContent = "preview failed");
   }, 250);
 }
 $("sw-radius").oninput = () => { $("sw-rlabel").textContent = $("sw-radius").value + " mi"; drawCircle(); preview(); };
-$("sw-mode").onchange = preview;
-$("sw-close").onclick = () => { $("sweepbox").hidden = true;
-  if (sweepCircle) { map.removeLayer(sweepCircle); sweepCircle = null; } if (es) es.close(); };
+$("sw-close").onclick = closeSweep;
 $("sw-go").onclick = () => {
-  if (es) es.close();
-  const btn = $("sw-go"); btn.disabled = true; btn.textContent = "Sweeping…";
-  const live = L.layerGroup().addTo(map);
-  es = new EventSource(`${API}/sweep?${qp()}`);
-  es.onmessage = ev => {
-    const m = JSON.parse(ev.data);
-    if (m.event === "start") $("sw-prog").textContent = `scoring ${m.towns} towns…`;
-    else if (m.event === "town") {
-      $("sw-prog").innerHTML = `${m.i}/${m.n} ${m.src === "cache" ? "·" : "◆"} ${m.town} — ${m.total}`;
-      L.circleMarker([m.lat, m.lon], { radius: 6, color: "#000a", weight: 1,
-        fillColor: BANDCLR[m.band] || "#888", fillOpacity: 0.9 }).addTo(live);
-    } else if (m.event === "done") {
-      es.close(); es = null; btn.disabled = false; btn.textContent = "Sweep";
-      $("sw-prog").textContent = "done ✓";
-      load().then(() => { map.removeLayer(live);
-        if (sweepCircle) map.fitBounds(sweepCircle.getBounds().pad(0.1)); });
-    }
-  };
-  es.onerror = () => { $("sw-prog").textContent = "stream error";
-    btn.disabled = false; btn.textContent = "Sweep"; if (es) es.close(); };
+  fetch(`${API}/api/sweep_jobs`, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lat: sweepCenter.lat, lon: sweepCenter.lng, radius: +$("sw-radius").value }) })
+    .then(() => { closeSweep(); refreshJobs(); startPolling(); });
+};
+
+// ---- sweep queue + coverage layer ----
+// Sweeps run server-side (a background worker drains the queue), so you can stack
+// several areas and walk away. Each job is also drawn as a "swept area" circle.
+let jobs = [], showCov = true, pollT = null, lastActive = false;
+const covLayer = L.layerGroup().addTo(map);
+const JOB_CLR = { done: "#2e7d32", running: "#2b6cb0", error: "#b0392b", pending: "#8a94a0" };
+
+function refreshJobs() {
+  return fetch(`${API}/api/sweep_jobs`).then(r => r.json()).then(js => {
+    jobs = js; renderQueue(); drawCoverage();
+    const active = jobs.some(j => j.status === "pending" || j.status === "running");
+    if (active || lastActive) load();   // lastActive catches the final done → pull the last towns
+    lastActive = active;
+    if (active) startPolling(); else stopPolling();
+  }).catch(() => {});
+}
+function startPolling() { if (!pollT) pollT = setInterval(refreshJobs, 3000); }
+function stopPolling() { if (pollT) { clearInterval(pollT); pollT = null; } }
+
+function drawCoverage() {
+  covLayer.clearLayers();
+  if (!showCov) return;
+  jobs.forEach(j => {
+    const c = JOB_CLR[j.status] || "#8a94a0";
+    L.circle([j.lat, j.lon], { radius: j.radius_mi * 1609.34, color: c, weight: 1,
+      fillColor: c, fillOpacity: j.status === "done" ? 0.05 : 0.10, interactive: false,
+      dashArray: j.status === "pending" ? "5,5" : null }).addTo(covLayer);
+  });
+}
+
+function renderQueue() {
+  const show = jobs.filter(j => j.status !== "done").concat(
+    jobs.filter(j => j.status === "done").slice(0, 3));   // active + a few recent
+  if (!show.length) { $("queue").hidden = true; return; }
+  const icon = { pending: "⏳", running: "▶", done: "✓", error: "✕" };
+  $("queue").hidden = false;
+  $("queue").innerHTML = `<div class="qh">sweep queue</div>` + show.map(j => {
+    const pct = j.towns_total ? Math.round((j.towns_done / j.towns_total) * 100) : 0;
+    const label = j.status === "running" ? `${j.towns_done}/${j.towns_total || "…"}`
+                : j.status === "pending" ? "queued" : j.status;
+    const x = j.status === "pending" ? `<span class="qx" data-cancel="${j.id}" title="cancel">✕</span>` : "";
+    const bar = j.status === "running" ? `<div class="qbar"><i style="width:${pct}%"></i></div>` : "";
+    return `<div><div class="qrow"><span>${icon[j.status] || "•"}</span>` +
+           `<span>${(+j.radius_mi)}mi · ${label}</span>${x}</div>${bar}</div>`;
+  }).join("");
+}
+
+$("queue").addEventListener("click", e => {
+  const id = e.target.dataset.cancel;
+  if (id) fetch(`${API}/api/sweep_jobs/${id}`, { method: "DELETE" }).then(refreshJobs);
+});
+$("cov-toggle").onclick = () => {
+  showCov = !showCov;
+  $("cov-toggle").classList.toggle("on", showCov);
+  drawCoverage();
 };
 // Sweeping is an explicit mode: arm it, then one map tap opens the sweep box.
 // Without this, every stray tap (easy to do on touch) stole the tap from a town bubble.
@@ -344,7 +394,7 @@ function showPanel(on) {
 $("panel-close").onclick = () => showPanel(false);
 map.on("click", e => { if (armed) { setArmed(false); openSweep(e.latlng); } });
 // keep clicks on the UI overlays from falling through to the map
-["sweepbox", "bar", "legend"].forEach(id => {
+["sweepbox", "bar", "legend", "queue"].forEach(id => {
   const el = $(id);
   if (el) { L.DomEvent.disableClickPropagation(el); L.DomEvent.disableScrollPropagation(el); }
 });
@@ -375,10 +425,11 @@ locateMe(false);   // silent attempt on load (browser prompts once); button re-c
 function load() {
   return fetch(`${API}/api/verdicts`).then(r => r.json())
     .then(data => { rows = data; legend(); draw(); })
-    .catch(e => { document.getElementById("panel").innerHTML =
+    .catch(e => { document.getElementById("panel-body").innerHTML =
       `<div class="empty">Couldn't reach the server.<br><br>${e}</div>`; });
 }
 load();
+refreshJobs();   // show any queued/running sweeps + coverage circles from a prior session
 </script>
 </body>
 </html>

@@ -7,19 +7,23 @@ the FastAPI /chat + tools + email get added on top for the LXC step.
 
 from __future__ import annotations
 
-import json
 import os
+import threading
 import time
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 import area
 import cache
 
 load_dotenv(override=True)
+
+# Every sweep scores a town in BOTH trip modes, so all map views (moto/couple/
+# lunch) populate from one sweep. Cached (town, mode) pairs are skipped.
+SWEEP_MODES = ("moto", "couple")
 
 app = FastAPI(title="waypoint")
 
@@ -59,47 +63,131 @@ def verdicts():
 
 
 @app.get("/api/preview")
-def preview(lat: float, lon: float, radius: float, mode: str = "moto"):
-    """How many towns fall in the circle, and how many still need scoring — so a
-    sweep's cost/time is known before launching it."""
+def preview(lat: float, lon: float, radius: float):
+    """How many towns fall in the circle, and how many (town, mode) scoring calls
+    still need doing — so a sweep's cost is known before enqueuing it. Both trip
+    modes are scored, so `to_score` counts across moto + couple."""
     conn = cache.connect()
     towns = cache.towns_within(conn, lat, lon, radius)
-    cached = sum(1 for t in towns if cache.get_cached(conn, t["name"], t["state"], mode))
+    to_score = sum(
+        1 for t in towns for m in SWEEP_MODES
+        if not cache.get_cached(conn, t["name"], t["state"], m)
+    )
     conn.close()
-    return {"towns": len(towns), "cached": cached, "to_score": len(towns) - cached}
+    return {"towns": len(towns), "to_score": to_score}
 
 
-@app.get("/sweep")
-def sweep(lat: float, lon: float, radius: float, mode: str = "moto", refresh: bool = False):
-    """Stream (SSE) each town's verdict as it's scored/pulled from cache."""
+class SweepReq(BaseModel):
+    lat: float
+    lon: float
+    radius: float
 
-    def gen():
-        conn = cache.connect()
-        towns = cache.towns_within(conn, lat, lon, radius)
-        yield _sse({"event": "start", "towns": len(towns)})
-        for i, t in enumerate(towns, 1):
-            cached = None if refresh else cache.get_cached(conn, t["name"], t["state"], mode)
-            if cached:
-                r, src = cached, "cache"
-            else:
+
+_JOB_COLS = ("id, lat, lon, radius_mi, mode, status, towns_total, towns_done, error, "
+             "created_at, started_at, finished_at")
+
+
+@app.post("/api/sweep_jobs")
+def enqueue(req: SweepReq):
+    """Queue an area to sweep. A background worker drains pending jobs FIFO."""
+    conn = cache.connect()
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO sweep_jobs (lat, lon, radius_mi) VALUES (%s, %s, %s) RETURNING id",
+            [req.lat, req.lon, req.radius],
+        )
+        job_id = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+    return {"id": job_id, "status": "pending"}
+
+
+@app.get("/api/sweep_jobs")
+def list_jobs():
+    """Recent sweep jobs — feeds the backlog panel and the coverage layer."""
+    conn = cache.connect()
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT {_JOB_COLS} FROM sweep_jobs ORDER BY created_at DESC LIMIT 50")
+        cols = [d.name for d in cur.description]
+        rows = [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+@app.delete("/api/sweep_jobs/{job_id}")
+def cancel_job(job_id: int):
+    """Drop a job that hasn't started yet (running/done are left alone)."""
+    conn = cache.connect()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM sweep_jobs WHERE id = %s AND status = 'pending'", [job_id])
+        deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    return {"deleted": deleted}
+
+
+# ---- background sweep worker (one daemon thread; single uvicorn worker) ----
+
+def _claim_next(conn):
+    """Atomically grab the oldest pending job and mark it running."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE sweep_jobs SET status = 'running', started_at = now()
+               WHERE id = (SELECT id FROM sweep_jobs WHERE status = 'pending'
+                           ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+               RETURNING id, lat, lon, radius_mi"""
+        )
+        return cur.fetchone()
+
+
+def _run_job(conn, job_id, lat, lon, radius):
+    towns = cache.towns_within(conn, lat, lon, radius)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE sweep_jobs SET towns_total = %s WHERE id = %s", [len(towns), job_id])
+    for i, t in enumerate(towns, 1):
+        for mode in SWEEP_MODES:
+            if cache.get_cached(conn, t["name"], t["state"], mode):
+                continue
+            try:
                 r = area.score_town(t["name"], t["lat"], t["lon"], mode)
                 cache.store_verdict(conn, t["name"], t["state"], t["geoid"], mode,
                                     t["lat"], t["lon"], r)
-                src = "scored"
-            yield _sse({
-                "event": "town", "src": src, "i": i, "n": len(towns),
-                "town": t["name"], "state": t["state"], "lat": t["lat"], "lon": t["lon"],
-                "total": r.get("total"), "band": r.get("band"),
-            })
-        conn.close()
-        yield _sse({"event": "done"})
-
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+            except Exception as e:  # transient Places/Bedrock errors shouldn't kill the job
+                print(f"[worker] job {job_id} {t['name']}, {t['state']} ({mode}): "
+                      f"{type(e).__name__}: {str(e)[:80]} — skipping")
+        with conn.cursor() as cur:
+            cur.execute("UPDATE sweep_jobs SET towns_done = %s WHERE id = %s", [i, job_id])
+    with conn.cursor() as cur:
+        cur.execute("UPDATE sweep_jobs SET status = 'done', finished_at = now() WHERE id = %s",
+                    [job_id])
 
 
-def _sse(obj) -> str:
-    return f"data: {json.dumps(obj, default=str)}\n\n"
+def _worker_loop():
+    conn = cache.connect()
+    conn.autocommit = True
+    while True:
+        job = None
+        try:
+            job = _claim_next(conn)
+            if not job:
+                time.sleep(2)
+                continue
+            _run_job(conn, *job)
+        except Exception as e:  # keep the worker alive across unexpected failures
+            print(f"[worker] error: {type(e).__name__}: {e}")
+            if job:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("UPDATE sweep_jobs SET status = 'error', error = %s, "
+                                    "finished_at = now() WHERE id = %s", [str(e)[:200], job[0]])
+                except Exception:
+                    pass
+            time.sleep(2)
+
+
+@app.on_event("startup")
+def _start_worker():
+    threading.Thread(target=_worker_loop, name="sweep-worker", daemon=True).start()
 
 
 # Static map UI at / (mounted last so /api/* and /sweep win).
