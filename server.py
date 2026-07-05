@@ -165,6 +165,14 @@ def _run_job(conn, job_id, lat, lon, radius):
 def _worker_loop():
     conn = cache.connect()
     conn.autocommit = True
+    # A container restart (e.g. a deploy) kills the worker mid-job, stranding that
+    # job as 'running' forever. With a single worker, anything 'running' at boot is
+    # such an orphan — re-queue it. Re-scoring is cheap: cached towns are skipped.
+    with conn.cursor() as cur:
+        cur.execute("UPDATE sweep_jobs SET status = 'pending', started_at = NULL, "
+                    "towns_done = 0 WHERE status = 'running'")
+        if cur.rowcount:
+            print(f"[worker] re-queued {cur.rowcount} orphaned running job(s)")
     while True:
         job = None
         try:
