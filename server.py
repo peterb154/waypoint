@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
@@ -24,6 +25,10 @@ load_dotenv(override=True)
 # Every sweep scores a town in BOTH trip modes, so all map views (moto/couple/
 # lunch) populate from one sweep. Cached (town, mode) pairs are skipped.
 SWEEP_MODES = ("moto", "couple")
+
+# Towns scored concurrently per job. score_town is I/O-bound (Places + Bedrock),
+# so a small pool is a big speedup; kept modest to respect upstream rate limits.
+SWEEP_CONCURRENCY = int(os.environ.get("SWEEP_CONCURRENCY", "5"))
 
 app = FastAPI(title="waypoint")
 
@@ -140,23 +145,39 @@ def _claim_next(conn):
         return cur.fetchone()
 
 
+def _score_modes(t, modes):
+    """Pure API work (no DB) so it's safe to run in a pool thread: score this town
+    in each still-needed mode. Returns [(mode, verdict), ...]."""
+    out = []
+    for mode in modes:
+        out.append((mode, area.score_town(t["name"], t["lat"], t["lon"], mode)))
+    return out
+
+
 def _run_job(conn, job_id, lat, lon, radius):
     towns = cache.towns_within(conn, lat, lon, radius)
     with conn.cursor() as cur:
         cur.execute("UPDATE sweep_jobs SET towns_total = %s WHERE id = %s", [len(towns), job_id])
-    for i, t in enumerate(towns, 1):
-        for mode in SWEEP_MODES:
-            if cache.get_cached(conn, t["name"], t["state"], mode):
-                continue
+    # Which modes each town still needs (cache check on the main thread, before the pool).
+    work = [(t, [m for m in SWEEP_MODES if not cache.get_cached(conn, t["name"], t["state"], m)])
+            for t in towns]
+    # Score N towns concurrently (score_town is I/O-bound). Pool threads only touch
+    # the APIs; all DB writes stay here on the main thread → one connection, no races.
+    done = 0
+    with ThreadPoolExecutor(max_workers=SWEEP_CONCURRENCY) as ex:
+        futs = {ex.submit(_score_modes, t, modes): t for t, modes in work}
+        for fut in as_completed(futs):
+            t = futs[fut]
             try:
-                r = area.score_town(t["name"], t["lat"], t["lon"], mode)
-                cache.store_verdict(conn, t["name"], t["state"], t["geoid"], mode,
-                                    t["lat"], t["lon"], r)
+                for mode, r in fut.result():
+                    cache.store_verdict(conn, t["name"], t["state"], t["geoid"], mode,
+                                        t["lat"], t["lon"], r)
             except Exception as e:  # transient Places/Bedrock errors shouldn't kill the job
-                print(f"[worker] job {job_id} {t['name']}, {t['state']} ({mode}): "
+                print(f"[worker] job {job_id} {t['name']}, {t['state']}: "
                       f"{type(e).__name__}: {str(e)[:80]} — skipping")
-        with conn.cursor() as cur:
-            cur.execute("UPDATE sweep_jobs SET towns_done = %s WHERE id = %s", [i, job_id])
+            done += 1
+            with conn.cursor() as cur:
+                cur.execute("UPDATE sweep_jobs SET towns_done = %s WHERE id = %s", [done, job_id])
     with conn.cursor() as cur:
         cur.execute("UPDATE sweep_jobs SET status = 'done', finished_at = now() WHERE id = %s",
                     [job_id])
