@@ -39,7 +39,7 @@ def cached_verdicts(conn, stale_hours=None):
     resumed run skip rows already re-scored in this pass."""
     where, params = "", []
     if stale_hours is not None:
-        where = "WHERE evaluated_at < now() - make_interval(hours => %s)"
+        where = "WHERE evaluated_at < now() - (%s * interval '1 hour')"
         params = [stale_hours]
     with conn.cursor() as cur:
         cur.execute(
