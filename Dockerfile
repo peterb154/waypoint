@@ -15,7 +15,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # App modules.
-COPY server.py area.py cache.py places.py chains.py verdict.py ./
+COPY server.py area.py cache.py places.py chains.py verdict.py tracks.py ./
 
 # Static web UI, migrations, one-shot scripts, and source data (gazetteer).
 COPY web/        /app/web/
