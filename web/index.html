@@ -107,6 +107,15 @@
   #sw-go { width:100%; margin-top:8px; padding:8px; border:0; border-radius:6px; cursor:pointer;
            background:#2b6cb0; color:#fff; font-weight:600; }
   #sw-go[disabled] { background:#3a4552; cursor:default; }
+  #import { background: var(--panel); border: 1px solid #333; color: var(--ink);
+            padding: 7px 11px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px; }
+  #trackbox { position:absolute; z-index:600; top:52px; right:10px; width:230px; background:var(--panel);
+              border:1px solid #333; border-radius:8px; padding:10px 12px; font-size:13px; }
+  #trackbox .sw-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  #trackbox b { font-size:13px; } #trk-close { cursor:pointer; color:var(--muted); }
+  #trk-info { color:var(--muted); font-size:12px; margin:6px 0; }
+  #trk-dl { width:100%; margin-top:6px; padding:8px; border:0; border-radius:6px; cursor:pointer;
+            background:#e07b1a; color:#111; font-weight:600; }
   .empty { color: var(--muted); padding-top: 40px; text-align: center; }
   @media (max-width: 720px) {
     #app { flex-direction: column; }
@@ -130,6 +139,13 @@
       <button id="locate" title="center on my location">📍</button>
       <button id="sweep-arm" title="arm, then tap the map to sweep an area">＋ Sweep</button>
       <button id="cov-toggle" class="on" title="show/hide areas we've swept">▦ Areas</button>
+      <button id="import" title="import a KML / KMZ / GPX track onto the map">📂 Import</button>
+      <input id="import-file" type="file" accept=".kml,.kmz,.gpx" hidden />
+    </div>
+    <div id="trackbox" hidden>
+      <div class="sw-row"><b>Imported track</b><span id="trk-close">✕</span></div>
+      <div id="trk-info"></div>
+      <button id="trk-dl">⬇ Download GPX</button>
     </div>
     <div id="sweepbox" hidden>
       <div class="sw-row"><b>Sweep an area</b><span id="sw-close">✕</span></div>
@@ -509,10 +525,57 @@ function showPanel(on) {
 $("panel-close").onclick = () => showPanel(false);
 map.on("click", e => { if (armed) openSweep(e.latlng); });   // stays armed → tap again to re-center
 // keep clicks on the UI overlays from falling through to the map
-["sweepbox", "bar", "legend", "queue"].forEach(id => {
+["sweepbox", "bar", "legend", "queue", "trackbox"].forEach(id => {
   const el = $(id);
   if (el) { L.DomEvent.disableClickPropagation(el); L.DomEvent.disableScrollPropagation(el); }
 });
+
+// ---- import a KML / KMZ / GPX track (overlay on the map + re-export as GPX) ----
+// Sits in its own layer, so it stays put across moto/couple/lunch/camping views.
+const importLayer = L.layerGroup().addTo(map);
+let importedGpx = null, importedName = "track";
+
+$("import").onclick = () => $("import-file").click();
+$("import-file").onchange = async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  importedName = file.name.replace(/\.[^.]+$/, "") || "track";
+  try {
+    const resp = await fetch(`${API}/api/tracks`, { method: "POST", body: await file.arrayBuffer() });
+    const d = await resp.json();
+    if (!resp.ok) { alert("Import failed: " + (d.detail || resp.status)); }
+    else showTrack(d);
+  } catch (err) { alert("Import failed: " + err); }
+  e.target.value = "";   // let the same file be re-imported
+};
+
+function showTrack(d) {
+  importLayer.clearLayers();
+  const layer = L.geoJSON(d.geojson, {
+    style: { color: "#ff8c00", weight: 3, opacity: 0.9 },
+    pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 5, color: "#fff", weight: 1,
+      fillColor: "#ff8c00", fillOpacity: 0.95 }),
+    onEachFeature: (f, l) => { if (f.properties && f.properties.name) l.bindTooltip(f.properties.name); },
+  }).addTo(importLayer);
+  importedGpx = d.gpx;
+  const b = layer.getBounds();
+  if (b.isValid()) map.fitBounds(b.pad(0.15));
+  const c = d.counts;
+  $("trk-info").textContent =
+    `${importedName} — ${c.tracks} track(s), ${c.waypoints} waypoint(s)` +
+    (d.skipped && d.skipped.length ? ` · skipped: ${d.skipped.join(", ")}` : "");
+  $("trackbox").hidden = false;
+}
+$("trk-dl").onclick = () => {
+  if (!importedGpx) return;
+  const url = URL.createObjectURL(new Blob([importedGpx], { type: "application/gpx+xml" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = importedName + ".gpx"; a.click();
+  URL.revokeObjectURL(url);
+};
+$("trk-close").onclick = () => {
+  importLayer.clearLayers(); importedGpx = null; $("trackbox").hidden = true;
+};
 
 // ---- user location (reference point) ----
 let me = null, meMarker = null;

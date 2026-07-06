@@ -1,6 +1,7 @@
 # Runtime deps for the lean waypoint FastAPI agent (server.py).
 # Does NOT depend on the vendored strands_pg package.
 boto3>=1.35
+defusedxml>=0.7
 httpx>=0.27
 psycopg[binary]>=3.2
 fastapi>=0.115

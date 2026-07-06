@@ -14,12 +14,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import area
 import cache
+import tracks
 
 load_dotenv(override=True)
 
@@ -112,6 +113,30 @@ def camp_enrich(camp_id: int, refresh: bool = False):
     except Exception as e:
         print(f"[camps] enrich error: {type(e).__name__}: {str(e)[:100]}")
         return {"summary": None, "error": "Couldn't reach Camper right now."}
+
+
+MAX_TRACK_UPLOAD = 16 * 1024 * 1024   # 16 MB
+
+
+@app.post("/api/tracks")
+async def import_track(request: Request):
+    """Parse an uploaded KML/KMZ/GPX (raw request body) into GeoJSON for the map
+    overlay plus a normalised GPX for download. 400 on anything unparseable."""
+    clen = request.headers.get("content-length", "")
+    if clen.isdigit() and int(clen) > MAX_TRACK_UPLOAD:
+        raise HTTPException(status_code=413, detail="file too large (max 16 MB)")
+    data = await request.body()
+    if len(data) > MAX_TRACK_UPLOAD:
+        raise HTTPException(status_code=413, detail="file too large (max 16 MB)")
+    try:
+        geom = tracks.parse(data)
+    except tracks.TrackError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # a weird file shouldn't 500 the whole service
+        raise HTTPException(status_code=400,
+                            detail=f"could not parse file: {type(e).__name__}") from e
+    return {"geojson": tracks.to_geojson(geom), "gpx": tracks.to_gpx(geom),
+            "counts": tracks.counts(geom), "skipped": geom["skipped"]}
 
 
 @app.get("/api/preview")
