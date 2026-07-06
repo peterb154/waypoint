@@ -9,8 +9,9 @@ its ~10km search circle, so satellites borrowed a big neighbour's lodging/food
 counts only for its nearest town. In-place upsert; idempotent.
 
 --dry lists the work and spends nothing. --min-drop X only prints rows whose
-total moved by >= X (spot the big corrections). Run on the LXC after deploy:
-    docker compose exec agent python scripts/reattribute.py
+total moved by >= X (spot the big corrections). --stale-hours N skips rows
+re-scored within the last N hours (resume a partial pass). Run on the LXC:
+    docker compose exec agent python scripts/reattribute.py --stale-hours 2
 """
 
 from __future__ import annotations
@@ -32,12 +33,19 @@ load_dotenv(override=True)
 ANCHOR_MI = 15.0
 
 
-def cached_verdicts(conn):
-    """Every stored verdict: (town, state, geoid, mode, lat, lon, total)."""
+def cached_verdicts(conn, stale_hours=None):
+    """Stored verdicts: (town, state, geoid, mode, lat, lon, total). With
+    stale_hours set, only rows last evaluated longer ago than that — lets a
+    resumed run skip rows already re-scored in this pass."""
+    where, params = "", []
+    if stale_hours is not None:
+        where = "WHERE evaluated_at < now() - make_interval(hours => %s)"
+        params = [stale_hours]
     with conn.cursor() as cur:
         cur.execute(
             "SELECT town, state, geoid, mode, lat, lon, total "
-            "FROM town_verdicts ORDER BY total DESC NULLS LAST"
+            f"FROM town_verdicts {where} ORDER BY total DESC NULLS LAST",
+            params,
         )
         cols = [d.name for d in cur.description]
         return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
@@ -48,9 +56,10 @@ def main() -> int:
     limit = int(argv[argv.index("--limit") + 1]) if "--limit" in argv else None
     dry = "--dry" in argv
     min_drop = float(argv[argv.index("--min-drop") + 1]) if "--min-drop" in argv else 0.0
+    stale_hours = float(argv[argv.index("--stale-hours") + 1]) if "--stale-hours" in argv else None
 
     conn = cache.connect()
-    rows = cached_verdicts(conn)
+    rows = cached_verdicts(conn, stale_hours=stale_hours)
     if limit:
         rows = rows[:limit]
     print(f"{len(rows)} cached verdicts to re-attribute (anchor radius {ANCHOR_MI:.0f} mi)"

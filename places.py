@@ -11,10 +11,38 @@ candidates, then Place Details only on survivors of the chain filter.
 from __future__ import annotations
 
 import os
+import time
 
 import httpx
 
 PLACES_BASE = "https://places.googleapis.com/v1"
+
+# Retry transient failures: 429 (rate limit), 5xx, and connection/DNS errors
+# (this deployment's container DNS is intermittently flaky). Bursty re-scores and
+# concurrent sweeps both lean on this.
+_RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+def _send_with_retry(send, *, tries: int = 6, base: float = 1.0, cap: float = 30.0):
+    """Call send() -> httpx.Response, retrying throttle/5xx responses and
+    transient transport (connection/DNS) errors with exponential backoff,
+    honouring Retry-After. Returns the final Response (caller raises on it)."""
+    resp = None
+    for attempt in range(tries):
+        try:
+            resp = send()
+        except httpx.TransportError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(min(base * (2 ** attempt), cap))
+            continue
+        if resp.status_code in _RETRY_STATUS and attempt < tries - 1:
+            ra = resp.headers.get("Retry-After", "")
+            delay = float(ra) if ra.replace(".", "", 1).isdigit() else base * (2 ** attempt)
+            time.sleep(min(delay, cap))
+            continue
+        return resp
+    return resp
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 USER_AGENT = "waypoint (+https://github.com/peterb154/waypoint)"
 
@@ -134,7 +162,7 @@ def search_nearby(
     }
     if excluded_types:
         body["excludedTypes"] = excluded_types
-    resp = httpx.post(
+    resp = _send_with_retry(lambda: httpx.post(
         f"{PLACES_BASE}/places:searchNearby",
         headers={
             "X-Goog-Api-Key": _api_key(),
@@ -143,7 +171,7 @@ def search_nearby(
         },
         json=body,
         timeout=30,
-    )
+    ))
     resp.raise_for_status()
     out = []
     for p in resp.json().get("places", []):
@@ -179,14 +207,14 @@ def place_details(place_id: str) -> dict:
             "photos",
         ]
     )
-    resp = httpx.get(
+    resp = _send_with_retry(lambda: httpx.get(
         f"{PLACES_BASE}/places/{place_id}",
         headers={
             "X-Goog-Api-Key": _api_key(),
             "X-Goog-FieldMask": field_mask,
         },
         timeout=30,
-    )
+    ))
     resp.raise_for_status()
     p = resp.json()
     reviews = []
