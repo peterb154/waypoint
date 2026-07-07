@@ -126,6 +126,13 @@
     #map { height: 55vh; flex: none; }
     #app.nopanel #map { height: 100%; }
     #panel { width: 100%; max-width: 100%; height: 45vh; border-left: none; border-top: 1px solid #000; }
+    /* Phones: the toolbar wraps to several rows, so a box pinned at top:52px lands
+       on top of it and the zoom control. Dock the imported-track box to the bottom
+       of the map (buttons side by side) and lift the corner overlays above it. */
+    #trackbox { top: auto; bottom: 8px; left: 8px; right: 8px; width: auto; }
+    #trk-btns { display: flex; gap: 6px; }
+    #trk-btns > button { width: auto; flex: 1; margin-top: 8px; }
+    #app.has-track #legend, #app.has-track #queue { bottom: 96px; }
   }
 </style>
 </head>
@@ -149,8 +156,10 @@
     <div id="trackbox" hidden>
       <div class="sw-row"><b>Imported track</b><span id="trk-close">✕</span></div>
       <div id="trk-info"></div>
-      <button id="trk-dl">⬇ Download GPX</button>
-      <button id="trk-clear">✕ Clear route</button>
+      <div id="trk-btns">
+        <button id="trk-dl">⬇ Download GPX</button>
+        <button id="trk-clear">✕ Clear route</button>
+      </div>
     </div>
     <div id="sweepbox" hidden>
       <div class="sw-row"><b>Sweep an area</b><span id="sw-close">✕</span></div>
@@ -576,6 +585,7 @@ function showTrack(d, fit = true) {
     `${importedName} — ${c.tracks} track(s), ${c.waypoints} waypoint(s)` +
     (d.skipped && d.skipped.length ? ` · skipped: ${d.skipped.join(", ")}` : "");
   $("trackbox").hidden = false;
+  $("app").classList.add("has-track");   // (mobile) lift bottom overlays above the docked box
 }
 $("trk-dl").onclick = () => {
   if (!importedGpx) return;
@@ -586,6 +596,7 @@ $("trk-dl").onclick = () => {
 };
 function clearRoute() {
   importLayer.clearLayers(); importedGpx = null; $("trackbox").hidden = true;
+  $("app").classList.remove("has-track");
   fetch(`${API}/api/tracks`, { method: "DELETE" }).catch(() => {});   // clear the shared track
 }
 $("trk-close").onclick = clearRoute;
