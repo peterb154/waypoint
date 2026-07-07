@@ -116,6 +116,10 @@
   #trk-info { color:var(--muted); font-size:12px; margin:6px 0; }
   #trk-dl { width:100%; margin-top:6px; padding:8px; border:0; border-radius:6px; cursor:pointer;
             background:#e07b1a; color:#111; font-weight:600; }
+  #trk-clear { width:100%; margin-top:6px; padding:7px; border:1px solid #444; border-radius:6px;
+               cursor:pointer; background:transparent; color:var(--ink); font:inherit; font-size:13px; }
+  #trk-clear:hover { border-color:#666; }
+  #queue .qh a { color:#7cb8ff; cursor:pointer; float:right; }
   .empty { color: var(--muted); padding-top: 40px; text-align: center; }
   @media (max-width: 720px) {
     #app { flex-direction: column; }
@@ -146,6 +150,7 @@
       <div class="sw-row"><b>Imported track</b><span id="trk-close">✕</span></div>
       <div id="trk-info"></div>
       <button id="trk-dl">⬇ Download GPX</button>
+      <button id="trk-clear">✕ Clear route</button>
     </div>
     <div id="sweepbox" hidden>
       <div class="sw-row"><b>Sweep an area</b><span id="sw-close">✕</span></div>
@@ -394,7 +399,7 @@ function renderQueue() {
   if (!show.length) { $("queue").hidden = true; return; }
   const icon = { pending: "⏳", running: "▶", done: "✓", error: "✕" };
   $("queue").hidden = false;
-  $("queue").innerHTML = `<div class="qh">sweep queue</div>` + show.map(j => {
+  $("queue").innerHTML = `<div class="qh">sweep queue<a id="q-clear" title="cancel pending + clear finished">clear</a></div>` + show.map(j => {
     const pct = j.towns_total ? Math.round((j.towns_done / j.towns_total) * 100) : 0;
     const label = j.status === "running" ? `${j.towns_done}/${j.towns_total || "…"}`
                 : j.status === "pending" ? "queued" : j.status;
@@ -407,7 +412,11 @@ function renderQueue() {
 
 $("queue").addEventListener("click", e => {
   const id = e.target.dataset.cancel;
-  if (id) fetch(`${API}/api/sweep_jobs/${id}`, { method: "DELETE" }).then(refreshJobs);
+  if (id) { fetch(`${API}/api/sweep_jobs/${id}`, { method: "DELETE" }).then(refreshJobs); return; }
+  if (e.target.id === "q-clear") {
+    if (!confirm("Clear the sweep queue? (a running sweep keeps going)")) return;
+    fetch(`${API}/api/sweep_jobs`, { method: "DELETE" }).then(refreshJobs);
+  }
 });
 $("cov-toggle").onclick = () => {
   showCov = !showCov;
@@ -573,9 +582,11 @@ $("trk-dl").onclick = () => {
   a.href = url; a.download = importedName + ".gpx"; a.click();
   URL.revokeObjectURL(url);
 };
-$("trk-close").onclick = () => {
+function clearRoute() {
   importLayer.clearLayers(); importedGpx = null; $("trackbox").hidden = true;
-};
+}
+$("trk-close").onclick = clearRoute;
+$("trk-clear").onclick = clearRoute;
 
 // ---- user location (reference point) ----
 let me = null, meMarker = null;

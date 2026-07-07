@@ -203,6 +203,19 @@ def cancel_job(job_id: int):
     return {"deleted": deleted}
 
 
+@app.delete("/api/sweep_jobs")
+def clear_jobs():
+    """Clear the queue: drop every pending + finished (done/error) job. A job
+    that's currently running is left alone to finish."""
+    conn = cache.connect()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM sweep_jobs WHERE status <> 'running'")
+        deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    return {"deleted": deleted}
+
+
 # ---- background sweep worker (one daemon thread; single uvicorn worker) ----
 
 def _claim_next(conn):
