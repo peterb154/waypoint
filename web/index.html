@@ -543,6 +543,12 @@ map.on("click", e => { if (armed) openSweep(e.latlng); });   // stays armed → 
 // Sits in its own layer, so it stays put across moto/couple/lunch/camping views.
 const importLayer = L.layerGroup().addTo(map);
 let importedGpx = null, importedName = "track";
+const TRACK_KEY = "waypoint.track";   // persists the imported track across reloads (this browser)
+
+function persistTrack(d) {
+  try { localStorage.setItem(TRACK_KEY, JSON.stringify({ name: importedName, ...d })); }
+  catch (e) { console.warn("track too big to persist across reloads:", e); }  // still shown this session
+}
 
 $("import").onclick = () => $("import-file").click();
 $("import-file").onchange = async (e) => {
@@ -553,12 +559,12 @@ $("import-file").onchange = async (e) => {
     const resp = await fetch(`${API}/api/tracks`, { method: "POST", body: await file.arrayBuffer() });
     const d = await resp.json();
     if (!resp.ok) { alert("Import failed: " + (d.detail || resp.status)); }
-    else showTrack(d);
+    else { showTrack(d); persistTrack(d); }
   } catch (err) { alert("Import failed: " + err); }
   e.target.value = "";   // let the same file be re-imported
 };
 
-function showTrack(d) {
+function showTrack(d, fit = true) {
   importLayer.clearLayers();
   const layer = L.geoJSON(d.geojson, {
     style: { color: "#ff8c00", weight: 3, opacity: 0.9 },
@@ -568,7 +574,7 @@ function showTrack(d) {
   }).addTo(importLayer);
   importedGpx = d.gpx;
   const b = layer.getBounds();
-  if (b.isValid()) map.fitBounds(b.pad(0.15));
+  if (fit && b.isValid()) map.fitBounds(b.pad(0.15));
   const c = d.counts;
   $("trk-info").textContent =
     `${importedName} — ${c.tracks} track(s), ${c.waypoints} waypoint(s)` +
@@ -584,9 +590,19 @@ $("trk-dl").onclick = () => {
 };
 function clearRoute() {
   importLayer.clearLayers(); importedGpx = null; $("trackbox").hidden = true;
+  localStorage.removeItem(TRACK_KEY);
 }
 $("trk-close").onclick = clearRoute;
 $("trk-clear").onclick = clearRoute;
+
+// Restore a previously-imported track (this browser) — show it where it is, but
+// don't refit the view (verdict load owns the initial framing).
+(function restoreTrack() {
+  const raw = localStorage.getItem(TRACK_KEY);
+  if (!raw) return;
+  try { const d = JSON.parse(raw); importedName = d.name || "track"; showTrack(d, false); }
+  catch (e) { localStorage.removeItem(TRACK_KEY); }
+})();
 
 // ---- user location (reference point) ----
 let me = null, meMarker = null;
