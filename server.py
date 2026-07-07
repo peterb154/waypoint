@@ -16,6 +16,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
 import area
@@ -119,9 +120,10 @@ MAX_TRACK_UPLOAD = 16 * 1024 * 1024   # 16 MB
 
 
 @app.post("/api/tracks")
-async def import_track(request: Request):
-    """Parse an uploaded KML/KMZ/GPX (raw request body) into GeoJSON for the map
-    overlay plus a normalised GPX for download. 400 on anything unparseable."""
+async def import_track(request: Request, name: str = ""):
+    """Parse an uploaded KML/KMZ/GPX (raw request body) into GeoJSON + a normalised
+    GPX, and persist it as the current shared track (replacing any previous) so it
+    shows on any browser/device. 400 on anything unparseable."""
     clen = request.headers.get("content-length", "")
     if clen.isdigit() and int(clen) > MAX_TRACK_UPLOAD:
         raise HTTPException(status_code=413, detail="file too large (max 16 MB)")
@@ -135,8 +137,46 @@ async def import_track(request: Request):
     except Exception as e:  # a weird file shouldn't 500 the whole service
         raise HTTPException(status_code=400,
                             detail=f"could not parse file: {type(e).__name__}") from e
-    return {"geojson": tracks.to_geojson(geom), "gpx": tracks.to_gpx(geom),
-            "counts": tracks.counts(geom), "skipped": geom["skipped"]}
+    payload = {"name": name or None, "geojson": tracks.to_geojson(geom), "gpx": tracks.to_gpx(geom),
+               "counts": tracks.counts(geom), "skipped": geom["skipped"]}
+    conn = cache.connect()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM saved_tracks")   # keep one current shared track
+        cur.execute("INSERT INTO saved_tracks (name, geojson, gpx, counts, skipped) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    [payload["name"], Jsonb(payload["geojson"]), payload["gpx"],
+                     Jsonb(payload["counts"]), Jsonb(payload["skipped"])])
+    conn.commit()
+    conn.close()
+    return payload
+
+
+@app.get("/api/tracks")
+def get_track():
+    """The current shared saved track, or {} if none — restores the overlay on load."""
+    conn = cache.connect()
+    with conn.cursor() as cur:
+        cur.execute("SELECT name, geojson, gpx, counts, skipped FROM saved_tracks "
+                    "ORDER BY created_at DESC LIMIT 1")
+        row = cur.fetchone()
+    conn.close()
+    if not row:
+        return {}
+    name, geojson, gpx, cnt, skipped = row
+    return {"name": name, "geojson": geojson, "gpx": gpx,
+            "counts": cnt, "skipped": skipped or []}
+
+
+@app.delete("/api/tracks")
+def clear_track():
+    """Clear the shared saved track (the 'clear route' button)."""
+    conn = cache.connect()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM saved_tracks")
+        deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    return {"deleted": deleted}
 
 
 @app.get("/api/preview")
