@@ -5,6 +5,7 @@ attractions once per town, not once per mode. Only lodging differs by mode.
 from __future__ import annotations
 
 import area
+import cache
 import places
 import server
 
@@ -29,6 +30,8 @@ def _fake_places(monkeypatch, empty=()):
 
     monkeypatch.setattr(places, "search_nearby", search_nearby)
     monkeypatch.setattr(places, "place_details", place_details)
+    monkeypatch.setattr(cache, "get_place_details", lambda pid: None)
+    monkeypatch.setattr(cache, "store_place_details", lambda pid, d: None)
     monkeypatch.setattr(area, "_judge", lambda *a, **kw: {"total": 5, "band": "acceptable"})
     return calls
 

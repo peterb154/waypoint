@@ -17,6 +17,7 @@ import sys
 import boto3
 from dotenv import load_dotenv
 
+import cache
 import places
 from chains import filter_independents
 
@@ -195,10 +196,14 @@ def _gather(lat, lon, included_types, top_n, excluded_types=None, keep_here=None
     )
     detailed = []
     for c in keep[:top_n]:
-        try:
-            d = places.place_details(c["id"])
-        except Exception as exc:  # noqa: BLE001 - details are best-effort
-            d = {"name": c["name"], "rating": c.get("rating"), "error": str(exc)}
+        d = cache.get_place_details(c["id"])
+        if d is None:
+            try:
+                d = places.place_details(c["id"])
+            except Exception as exc:  # noqa: BLE001 - details are best-effort
+                d = {"name": c["name"], "rating": c.get("rating"), "error": str(exc)}
+            else:
+                cache.store_place_details(c["id"], d)  # failures aren't cached
         d["lat"], d["lon"] = c.get("lat"), c.get("lon")
         detailed.append(d)
     return detailed, dropped

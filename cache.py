@@ -14,6 +14,9 @@ from psycopg.types.json import Jsonb
 
 DSN = os.environ.get("STRANDS_PG_DSN", "postgresql://strands:strands@localhost:5433/strands")
 
+# Place Details older than this are refetched (reviews/hours drift slowly).
+PLACE_DETAILS_TTL_DAYS = int(os.environ.get("PLACE_DETAILS_TTL_DAYS", "90"))
+
 # Census LSAD codes worth treating as real trip towns: city / town / village.
 TOWN_LSADS = ("25", "43", "47")
 
@@ -85,3 +88,28 @@ def store_verdict(conn, town, state, geoid, mode, lat, lon, r):
             ],
         )
     conn.commit()
+
+
+# Place Details cache. Each call opens its own short-lived connection because it
+# runs in sweep pool threads, which must not share the worker's connection.
+
+def get_place_details(place_id, ttl_days=None):
+    """Fresh cached place_details() dict for place_id, or None."""
+    ttl = PLACE_DETAILS_TTL_DAYS if ttl_days is None else ttl_days
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT data FROM place_details
+               WHERE place_id = %s AND fetched_at > now() - make_interval(days => %s)""",
+            [place_id, ttl],
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def store_place_details(place_id, data):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO place_details (place_id, data, fetched_at) VALUES (%s, %s, now())
+               ON CONFLICT (place_id) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()""",
+            [place_id, Jsonb(data)],
+        )
