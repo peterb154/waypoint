@@ -39,9 +39,15 @@ CAMPING_API_URL = os.environ.get("CAMPING_API_URL", "https://camping.epetersons.
 SWEEP_CONCURRENCY = int(os.environ.get("SWEEP_CONCURRENCY", "5"))
 
 # Rough Google Places cost of one (town, mode) score, for the sweep preview. ~2
-# Nearby searches (~$0.03 each) + ~1-2 uncached Place Details (~$0.025) once food
+# Nearby searches (USD_PER_SEARCH) + ~1-2 uncached Place Details once food
 # and attractions are shared across modes and details are cached (issue #8).
 EST_USD_PER_SCORE = float(os.environ.get("EST_USD_PER_SCORE", "0.10"))
+# List prices for the per-job cost log: Nearby Search Enterprise, Place Details
+# Enterprise+Atmosphere (per call, before any monthly free tier). The logged
+# figure can slightly undercount: a timed-out request that Google did process is
+# retried and billed twice but counted once.
+USD_PER_SEARCH = 0.035
+USD_PER_DETAILS = 0.025
 
 # How long the sweep worker waits after hitting the daily Places quota before
 # trying the queue again (the cap resets at midnight Pacific).
@@ -315,29 +321,37 @@ def _run_job(conn, job_id, lat, lon, radius):
     # they never use `conn` — verdict/job writes stay here on the main thread.
     done = 0
     quota = None
-    with ThreadPoolExecutor(max_workers=SWEEP_CONCURRENCY) as ex:
-        futs = {ex.submit(_score_modes, t, modes, anchors): t for t, modes in work}
-        for fut in as_completed(futs):
-            if fut.cancelled():
-                continue
-            t = futs[fut]
-            results, err = fut.result()
-            # Store whatever finished — even after a quota hit, in-flight towns are paid for.
-            for mode, r in results:
-                cache.store_verdict(conn, t["name"], t["state"], t["geoid"], mode,
-                                    t["lat"], t["lon"], r)
-            if isinstance(err, places.QuotaExhausted):
-                if quota is None:  # no point starting more towns today
-                    quota = err
-                    for f in futs:
-                        f.cancel()
-                continue
-            if err:  # transient Places/Bedrock errors shouldn't kill the job
-                print(f"[worker] job {job_id} {t['name']}, {t['state']}: "
-                      f"{type(err).__name__}: {str(err)[:80]} — skipping")
-            done += 1
-            with conn.cursor() as cur:
-                cur.execute("UPDATE sweep_jobs SET towns_done = %s WHERE id = %s", [done, job_id])
+    calls_before = places.CALLS.copy()
+    try:
+        with ThreadPoolExecutor(max_workers=SWEEP_CONCURRENCY) as ex:
+            futs = {ex.submit(_score_modes, t, modes, anchors): t for t, modes in work}
+            for fut in as_completed(futs):
+                if fut.cancelled():
+                    continue
+                t = futs[fut]
+                results, err = fut.result()
+                # Store whatever finished — even after a quota hit, in-flight towns are paid for.
+                for mode, r in results:
+                    cache.store_verdict(conn, t["name"], t["state"], t["geoid"], mode,
+                                        t["lat"], t["lon"], r)
+                if isinstance(err, places.QuotaExhausted):
+                    if quota is None:  # no point starting more towns today
+                        quota = err
+                        for f in futs:
+                            f.cancel()
+                    continue
+                if err:  # transient Places/Bedrock errors shouldn't kill the job
+                    print(f"[worker] job {job_id} {t['name']}, {t['state']}: "
+                          f"{type(err).__name__}: {str(err)[:80]} — skipping")
+                done += 1
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE sweep_jobs SET towns_done = %s WHERE id = %s",
+                                [done, job_id])
+    finally:  # log the spend even if the job dies on an unexpected error
+        calls = places.CALLS - calls_before
+        usd = calls["search"] * USD_PER_SEARCH + calls["details"] * USD_PER_DETAILS
+        print(f"[worker] job {job_id} places calls: search {calls['search']}, "
+              f"details {calls['details']} (~${usd:.2f}), towns {done}/{len(towns)}")
     if quota:
         raise quota  # the worker loop parks the job until the quota resets
     with conn.cursor() as cur:

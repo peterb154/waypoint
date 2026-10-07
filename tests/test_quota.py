@@ -142,3 +142,17 @@ def test_ordinary_error_skips_town_and_job_finishes(monkeypatch):
     server._run_job(conn, 1, 1, 2, 10)
     assert stored == [("B", "moto")]
     assert any("status = 'done'" in q for q in conn.sql)
+
+
+def test_job_logs_places_call_count(monkeypatch, capsys):
+    stored = []
+    _patch_cache(monkeypatch, _towns("A"), stored)
+
+    def score_modes(t, modes, anchors):
+        places._count("search")
+        places._count("details")
+        return [("moto", {"total": 5})], None
+
+    monkeypatch.setattr(server, "_score_modes", score_modes)
+    server._run_job(_Conn(), 7, 1, 2, 10)
+    assert "job 7 places calls: search 1, details 1 (~$0.06), towns 1/1" in capsys.readouterr().out
