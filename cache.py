@@ -14,6 +14,9 @@ from psycopg.types.json import Jsonb
 
 DSN = os.environ.get("STRANDS_PG_DSN", "postgresql://strands:strands@localhost:5433/strands")
 
+# Place Details older than this are refetched (reviews/hours drift slowly).
+PLACE_DETAILS_TTL_DAYS = int(os.environ.get("PLACE_DETAILS_TTL_DAYS", "90"))
+
 # Census LSAD codes worth treating as real trip towns: city / town / village.
 TOWN_LSADS = ("25", "43", "47")
 
@@ -85,3 +88,40 @@ def store_verdict(conn, town, state, geoid, mode, lat, lon, r):
             ],
         )
     conn.commit()
+
+
+# Place Details cache. Each call opens its own short-lived connection because it
+# runs in sweep pool threads, which must not share the worker's connection.
+# The cache is only an optimization: a DB error is logged and treated as a miss
+# (get) or skipped (store), so a Postgres hiccup never throws away a town's
+# already-paid Places calls.
+
+def get_place_details(place_id, ttl_days=None):
+    """Fresh cached place_details() dict for place_id, or None (miss or DB error)."""
+    ttl = PLACE_DETAILS_TTL_DAYS if ttl_days is None else ttl_days
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT data FROM place_details
+                   WHERE place_id = %s AND fetched_at > now() - make_interval(days => %s)""",
+                [place_id, ttl],
+            )
+            row = cur.fetchone()
+    except psycopg.Error as e:
+        print(f"[cache] place_details get failed ({type(e).__name__}), treating as miss")
+        return None
+    return row[0] if row else None
+
+
+def store_place_details(place_id, data):
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO place_details (place_id, data, fetched_at)
+                   VALUES (%s, %s, now())
+                   ON CONFLICT (place_id) DO UPDATE
+                   SET data = EXCLUDED.data, fetched_at = now()""",
+                [place_id, Jsonb(data)],
+            )
+    except psycopg.Error as e:
+        print(f"[cache] place_details store failed ({type(e).__name__}), skipping")

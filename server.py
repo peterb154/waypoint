@@ -271,7 +271,7 @@ def _claim_next(conn):
 
 
 def _score_modes(t, modes, anchors):
-    """Pure API work (no DB) so it's safe to run in a pool thread: score this town
+    """Runs in a pool thread: score this town
     in each still-needed mode. Returns [(mode, verdict), ...]. `anchors` is the
     area's town set for nearest-town venue attribution (no neighbour borrowing).
     Food + attractions don't depend on mode, so they're fetched once and shared."""
@@ -293,8 +293,9 @@ def _run_job(conn, job_id, lat, lon, radius):
     # Which modes each town still needs (cache check on the main thread, before the pool).
     work = [(t, [m for m in SWEEP_MODES if not cache.get_cached(conn, t["name"], t["state"], m)])
             for t in towns]
-    # Score N towns concurrently (score_town is I/O-bound). Pool threads only touch
-    # the APIs; all DB writes stay here on the main thread → one connection, no races.
+    # Score N towns concurrently (score_town is I/O-bound). Pool threads touch the
+    # APIs plus the Place Details cache (its own short-lived connection per call);
+    # they never use `conn` — verdict/job writes stay here on the main thread.
     done = 0
     with ThreadPoolExecutor(max_workers=SWEEP_CONCURRENCY) as ex:
         futs = {ex.submit(_score_modes, t, modes, anchors): t for t, modes in work}
