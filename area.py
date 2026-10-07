@@ -20,12 +20,12 @@ from verdict import TOP_N_FOOD, TOP_N_LODGING, _gather, _judge
 
 load_dotenv(override=True)
 
-# Venues are searched up to ~6.2 mi (10 km) from a town, so a town at the edge of
+# Venues are searched up to SEARCH_RADIUS_M (~6.2 mi) from a town, so a town at the edge of
 # a sweep can find venues whose real nearest town lies outside the sweep. Anchor
 # attribution therefore includes towns up to two search radii beyond the edge
 # (they compete for venues but aren't scored). Without this, a just-outside city
 # (Logan, UT) had its hotels and restaurants credited to an edge suburb (Nibley).
-ANCHOR_MARGIN_MI = 12.5
+ANCHOR_MARGIN_MI = 2 * places.SEARCH_RADIUS_M / 1609.344  # ≈ 12.4 mi
 
 
 def area_anchors(conn, lat, lon, radius_mi):
