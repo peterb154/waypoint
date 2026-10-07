@@ -204,6 +204,10 @@ def _gather(lat, lon, included_types, top_n, excluded_types=None, keep_here=None
                 d = {"name": c["name"], "rating": c.get("rating"), "error": str(exc)}
             else:
                 cache.store_place_details(c["id"], d)  # failures aren't cached
+        # The search result is fresh (and already paid for); a cached detail may be
+        # weeks old, so prefer the search's rating + count.
+        d["rating"] = c.get("rating") or d.get("rating")
+        d["reviews_count"] = c.get("reviews") or d.get("reviews_count")
         d["lat"], d["lon"] = c.get("lat"), c.get("lon")
         detailed.append(d)
     return detailed, dropped

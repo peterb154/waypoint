@@ -27,9 +27,9 @@ def fakes(monkeypatch):
 
     monkeypatch.setattr(places, "search_nearby", lambda *a, **kw: [dict(CANDIDATE)])
     monkeypatch.setattr(places, "place_details", place_details)
-    monkeypatch.setattr(cache, "get_place_details", lambda pid: state["store"].get(pid))
+    monkeypatch.setattr(cache, "get_place_details", lambda pid, *a, **kw: state["store"].get(pid))
     monkeypatch.setattr(cache, "store_place_details",
-                        lambda pid, d: state["store"].__setitem__(pid, dict(d)))
+                        lambda pid, d, *a, **kw: state["store"].__setitem__(pid, dict(d)))
     return state
 
 
@@ -48,6 +48,33 @@ def test_failed_fetch_is_not_cached(fakes):
     out, _ = verdict._gather(39.2, -96.3, ["motel"], 6)
     assert "error" in out[0]
     assert fakes["store"] == {}
+
+
+def test_search_rating_overrides_stale_cached_rating(fakes):
+    fakes["store"]["pid-1"] = {"id": "pid-1", "name": "Indie Motel", "rating": 3.1,
+                               "reviews_count": 9, "reviews": []}
+    out, _ = verdict._gather(39.2, -96.3, ["motel"], 6)
+    assert fakes["http"] == 0
+    assert out[0]["rating"] == CANDIDATE["rating"]
+    assert out[0]["reviews_count"] == CANDIDATE["reviews"]
+
+
+def test_db_down_falls_back_to_http(monkeypatch):
+    calls = {"http": 0}
+
+    def place_details(place_id):
+        calls["http"] += 1
+        return {"id": place_id, "name": "Indie Motel", "reviews": []}
+
+    def down():
+        raise psycopg.OperationalError("connection refused")
+
+    monkeypatch.setattr(places, "search_nearby", lambda *a, **kw: [dict(CANDIDATE)])
+    monkeypatch.setattr(places, "place_details", place_details)
+    monkeypatch.setattr(cache, "connect", down)
+    out, _ = verdict._gather(39.2, -96.3, ["motel"], 6)
+    assert calls["http"] == 1
+    assert out[0]["name"] == "Indie Motel"
 
 
 def _db_or_skip():
