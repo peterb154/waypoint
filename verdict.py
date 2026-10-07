@@ -200,6 +200,8 @@ def _gather(lat, lon, included_types, top_n, excluded_types=None, keep_here=None
         if d is None:
             try:
                 d = places.place_details(c["id"])
+            except places.QuotaExhausted:
+                raise  # out of quota: stop the sweep, don't score on stub details
             except Exception as exc:  # noqa: BLE001 - details are best-effort
                 d = {"name": c["name"], "rating": c.get("rating"), "error": str(exc)}
             else:
