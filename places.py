@@ -25,6 +25,9 @@ PLACES_BASE = "https://places.googleapis.com/v1"
 _RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
+# Lodging/food Nearby Search radius (area.ANCHOR_MARGIN_MI is derived from it).
+SEARCH_RADIUS_M = 10_000.0
+
 # Billable Places calls (successful responses) since process start. The sweep
 # worker logs the per-job delta so a sweep's real cost can be audited.
 CALLS: Counter = Counter()
@@ -167,7 +170,7 @@ def search_nearby(
     lat: float,
     lon: float,
     included_types: list[str],
-    radius_m: float = 10000.0,
+    radius_m: float = SEARCH_RADIUS_M,
     max_results: int = 20,
     excluded_types: list[str] | None = None,
 ) -> list[dict]:
