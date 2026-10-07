@@ -310,7 +310,7 @@ def _score_modes(t, modes, anchors):
 
 def _run_job(conn, job_id, lat, lon, radius):
     towns = cache.towns_within(conn, lat, lon, radius)
-    anchors = [(t["name"], t["lat"], t["lon"]) for t in towns]
+    anchors = area.area_anchors(conn, lat, lon, radius)
     with conn.cursor() as cur:
         cur.execute("UPDATE sweep_jobs SET towns_total = %s WHERE id = %s", [len(towns), job_id])
     # Which modes each town still needs (cache check on the main thread, before the pool).

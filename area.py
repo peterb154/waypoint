@@ -20,6 +20,19 @@ from verdict import TOP_N_FOOD, TOP_N_LODGING, _gather, _judge
 
 load_dotenv(override=True)
 
+# Venues are searched up to ~6.2 mi (10 km) from a town, so a town at the edge of
+# a sweep can find venues whose real nearest town lies outside the sweep. Anchor
+# attribution therefore includes towns up to two search radii beyond the edge
+# (they compete for venues but aren't scored). Without this, a just-outside city
+# (Logan, UT) had its hotels and restaurants credited to an edge suburb (Nibley).
+ANCHOR_MARGIN_MI = 12.5
+
+
+def area_anchors(conn, lat, lon, radius_mi):
+    """[(name, lat, lon), ...] attribution set for a sweep of radius_mi around (lat, lon)."""
+    return [(t["name"], t["lat"], t["lon"])
+            for t in cache.towns_within(conn, lat, lon, radius_mi + ANCHOR_MARGIN_MI)]
+
 
 def gather_shared(name: str, lat: float, lon: float, anchors=None) -> dict:
     """The mode-independent half of a score: food (search + details). Only lodging
@@ -86,9 +99,9 @@ def area_search(center: str, radius_mi: float, mode: str, limit: int | None = No
 
     conn = cache.connect()
     candidates = cache.towns_within(conn, lat, lon, radius_mi)
-    # Attribution set: every reference town in the area (before --limit), so each
+    # Attribution set: every reference town in (and just beyond) the area, so each
     # venue is credited to its nearest town and neighbours don't share venues.
-    anchors = [(c["name"], c["lat"], c["lon"]) for c in candidates]
+    anchors = area_anchors(conn, lat, lon, radius_mi)
     if limit:
         candidates = candidates[:limit]
     print(f"{len(candidates)} candidate towns from reference table\n")
