@@ -97,6 +97,7 @@
   #queue .qrow .qx { margin-left: auto; color: var(--muted); cursor: pointer; }
   #queue .qbar { height: 4px; background: #303a44; border-radius: 3px; overflow: hidden; margin-top: 2px; }
   #queue .qbar > i { display: block; height: 100%; background: #5b9bd5; }
+  #queue .qerr { color: #e08a80; font-size: 11px; margin: 0 0 4px 20px; max-width: 220px; }
   #sweepbox { position:absolute; z-index:600; top:52px; left:10px; width:230px; background:var(--panel);
               border:1px solid #333; border-radius:8px; padding:10px 12px; font-size:13px; }
   #sweepbox .sw-row { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:6px 0; }
@@ -360,7 +361,8 @@ function preview() {
     $("sw-preview").textContent = "…";
     const qs = new URLSearchParams({ lat: sweepCenter.lat, lon: sweepCenter.lng, radius: $("sw-radius").value });
     fetch(`${API}/api/preview?${qs}`).then(r => r.json())
-      .then(d => $("sw-preview").innerHTML = `${d.towns} towns · <b>${d.to_score} to score</b>`)
+      .then(d => $("sw-preview").innerHTML =
+        `${d.towns} towns · <b>${d.to_score} to score</b> · ≈ $${d.est_usd.toFixed(2)}`)
       .catch(() => $("sw-preview").textContent = "preview failed");
   }, 250);
 }
@@ -414,8 +416,11 @@ function renderQueue() {
                 : j.status === "pending" ? "queued" : j.status;
     const x = j.status === "pending" ? `<span class="qx" data-cancel="${j.id}" title="cancel">✕</span>` : "";
     const bar = j.status === "running" ? `<div class="qbar"><i style="width:${pct}%"></i></div>` : "";
+    // Why a job failed (e.g. the daily Places quota), not just "error".
+    const err = j.status === "error" && j.error
+      ? `<div class="qerr">${j.error.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`)}</div>` : "";
     return `<div><div class="qrow"><span>${icon[j.status] || "•"}</span>` +
-           `<span>${(+j.radius_mi)}mi · ${label}</span>${x}</div>${bar}</div>`;
+           `<span>${(+j.radius_mi)}mi · ${label}</span>${x}</div>${bar}${err}</div>`;
   }).join("");
 }
 

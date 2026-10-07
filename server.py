@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 import area
 import cache
+import places
 import tracks
 
 load_dotenv(override=True)
@@ -36,6 +37,11 @@ CAMPING_API_URL = os.environ.get("CAMPING_API_URL", "https://camping.epetersons.
 # Towns scored concurrently per job. score_town is I/O-bound (Places + Bedrock),
 # so a small pool is a big speedup; kept modest to respect upstream rate limits.
 SWEEP_CONCURRENCY = int(os.environ.get("SWEEP_CONCURRENCY", "5"))
+
+# Rough Google Places cost of one (town, mode) score, for the sweep preview. ~2
+# Nearby searches (~$0.03 each) + ~1-2 uncached Place Details (~$0.025) once food
+# and attractions are shared across modes and details are cached (issue #8).
+EST_USD_PER_SCORE = float(os.environ.get("EST_USD_PER_SCORE", "0.10"))
 
 app = FastAPI(title="waypoint")
 
@@ -183,7 +189,8 @@ def clear_track():
 def preview(lat: float, lon: float, radius: float):
     """How many towns fall in the circle, and how many (town, mode) scoring calls
     still need doing — so a sweep's cost is known before enqueuing it. Both trip
-    modes are scored, so `to_score` counts across moto + couple."""
+    modes are scored, so `to_score` counts across moto + couple. `est_usd` is a
+    rough Places bill for those scores (see EST_USD_PER_SCORE)."""
     conn = cache.connect()
     towns = cache.towns_within(conn, lat, lon, radius)
     to_score = sum(
@@ -191,7 +198,8 @@ def preview(lat: float, lon: float, radius: float):
         if not cache.get_cached(conn, t["name"], t["state"], m)
     )
     conn.close()
-    return {"towns": len(towns), "to_score": to_score}
+    return {"towns": len(towns), "to_score": to_score,
+            "est_usd": round(to_score * EST_USD_PER_SCORE, 2)}
 
 
 class SweepReq(BaseModel):
@@ -271,18 +279,23 @@ def _claim_next(conn):
 
 
 def _score_modes(t, modes, anchors):
-    """Runs in a pool thread: score this town
-    in each still-needed mode. Returns [(mode, verdict), ...]. `anchors` is the
-    area's town set for nearest-town venue attribution (no neighbour borrowing).
+    """Runs in a pool thread: score this town in each still-needed mode. Returns
+    ([(mode, verdict), ...], error) — the modes that finished plus the exception
+    that stopped the rest (or None), so a later mode's failure doesn't throw away
+    an earlier mode's already-paid verdict. `anchors` is the area's town set for
+    nearest-town venue attribution (no neighbour borrowing).
     Food + attractions don't depend on mode, so they're fetched once and shared."""
-    if not modes:
-        return []
-    shared = area.gather_shared(t["name"], t["lat"], t["lon"], anchors)
     out = []
-    for mode in modes:
-        out.append((mode, area.score_town(t["name"], t["lat"], t["lon"], mode,
-                                          anchors=anchors, shared=shared)))
-    return out
+    if not modes:
+        return out, None
+    try:
+        shared = area.gather_shared(t["name"], t["lat"], t["lon"], anchors)
+        for mode in modes:
+            out.append((mode, area.score_town(t["name"], t["lat"], t["lon"], mode,
+                                              anchors=anchors, shared=shared)))
+    except Exception as e:  # handed back to _run_job, which logs or stops the job
+        return out, e
+    return out, None
 
 
 def _run_job(conn, job_id, lat, lon, radius):
@@ -301,13 +314,18 @@ def _run_job(conn, job_id, lat, lon, radius):
         futs = {ex.submit(_score_modes, t, modes, anchors): t for t, modes in work}
         for fut in as_completed(futs):
             t = futs[fut]
-            try:
-                for mode, r in fut.result():
-                    cache.store_verdict(conn, t["name"], t["state"], t["geoid"], mode,
-                                        t["lat"], t["lon"], r)
-            except Exception as e:  # transient Places/Bedrock errors shouldn't kill the job
+            results, err = fut.result()
+            for mode, r in results:
+                cache.store_verdict(conn, t["name"], t["state"], t["geoid"], mode,
+                                    t["lat"], t["lon"], r)
+            if isinstance(err, places.QuotaExhausted):
+                # No point scoring the rest today; the worker loop marks the job
+                # 'error' with this message, which the sweep queue shows.
+                ex.shutdown(wait=False, cancel_futures=True)
+                raise err
+            if err:  # transient Places/Bedrock errors shouldn't kill the job
                 print(f"[worker] job {job_id} {t['name']}, {t['state']}: "
-                      f"{type(e).__name__}: {str(e)[:80]} — skipping")
+                      f"{type(err).__name__}: {str(err)[:80]} — skipping")
             done += 1
             with conn.cursor() as cur:
                 cur.execute("UPDATE sweep_jobs SET towns_done = %s WHERE id = %s", [done, job_id])

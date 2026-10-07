@@ -38,7 +38,8 @@ def _fake_places(monkeypatch, empty=()):
 
 def test_two_modes_share_food_and_attractions(monkeypatch):
     calls = _fake_places(monkeypatch)
-    out = server._score_modes(TOWN, ["moto", "couple"], anchors=None)
+    out, err = server._score_modes(TOWN, ["moto", "couple"], anchors=None)
+    assert err is None
     assert [m for m, _ in out] == ["moto", "couple"]
     assert calls["search"].count("food") == 1
     assert calls["search"].count("attractions") == 1
@@ -49,7 +50,7 @@ def test_two_modes_share_food_and_attractions(monkeypatch):
 
 def test_no_modes_needed_costs_nothing(monkeypatch):
     calls = _fake_places(monkeypatch)
-    assert server._score_modes(TOWN, [], anchors=None) == []
+    assert server._score_modes(TOWN, [], anchors=None) == ([], None)
     assert calls["search"] == []
 
 
@@ -80,7 +81,8 @@ def test_attractions_fetched_once_when_only_second_mode_reaches_judge(monkeypatc
         return real(lat, lon, included_types, **kw)
 
     monkeypatch.setattr(places, "search_nearby", search_nearby)
-    out = dict(server._score_modes(TOWN, ["moto", "couple"], anchors=None))
+    results, _ = server._score_modes(TOWN, ["moto", "couple"], anchors=None)
+    out = dict(results)
     assert out["moto"]["band"] == "filter-out"
     assert out["couple"]["band"] == "acceptable"
     assert calls["search"].count("attractions") == 1

@@ -23,10 +23,22 @@ PLACES_BASE = "https://places.googleapis.com/v1"
 _RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
+class QuotaExhausted(RuntimeError):
+    """The GCP project's per-day Places quota cap is used up (resets midnight
+    Pacific). Retrying is pointless, so callers should stop, not skip-and-continue."""
+
+
+def _is_daily_quota(resp) -> bool:
+    # Google's 429 body names the limit, e.g. "... limit 'SearchNearby requests per
+    # day' ..." — per-minute limits are worth retrying, per-day ones are not.
+    return resp.status_code == 429 and "per day" in resp.text.lower()
+
+
 def _send_with_retry(send, *, tries: int = 6, base: float = 1.0, cap: float = 30.0):
     """Call send() -> httpx.Response, retrying throttle/5xx responses and
     transient transport (connection/DNS) errors with exponential backoff,
-    honouring Retry-After. Returns the final Response (caller raises on it)."""
+    honouring Retry-After. Returns the final Response (caller raises on it).
+    Raises QuotaExhausted at once on a per-day quota 429."""
     resp = None
     for attempt in range(tries):
         try:
@@ -36,6 +48,9 @@ def _send_with_retry(send, *, tries: int = 6, base: float = 1.0, cap: float = 30
                 raise
             time.sleep(min(base * (2 ** attempt), cap))
             continue
+        if _is_daily_quota(resp):
+            raise QuotaExhausted("Daily Google Places quota reached — resets at midnight "
+                                 "Pacific. Re-queue the sweep then.")
         if resp.status_code in _RETRY_STATUS and attempt < tries - 1:
             ra = resp.headers.get("Retry-After", "")
             delay = float(ra) if ra.replace(".", "", 1).isdigit() else base * (2 ** attempt)
@@ -192,7 +207,7 @@ def search_nearby(
 
 
 def place_details(place_id: str) -> dict:
-    """Richer details for a survivor: website, reviews, editorial summary, photos."""
+    """Richer details for a survivor: website, reviews, editorial summary."""
     field_mask = ",".join(
         [
             "id",
@@ -204,7 +219,6 @@ def place_details(place_id: str) -> dict:
             "googleMapsUri",
             "editorialSummary",
             "reviews",
-            "photos",
         ]
     )
     resp = _send_with_retry(lambda: httpx.get(
@@ -236,7 +250,6 @@ def place_details(place_id: str) -> dict:
         "website": p.get("websiteUri"),
         "maps_uri": p.get("googleMapsUri"),
         "summary": (p.get("editorialSummary") or {}).get("text"),
-        "photo_count": len(p.get("photos", [])),
         "reviews": reviews,
     }
 
