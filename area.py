@@ -21,13 +21,31 @@ from verdict import TOP_N_FOOD, TOP_N_LODGING, _gather, _judge
 load_dotenv(override=True)
 
 
-def score_town(name: str, lat: float, lon: float, mode: str, anchors=None) -> dict:
+def gather_shared(name: str, lat: float, lon: float, anchors=None) -> dict:
+    """The mode-independent half of a score: food (search + details). Only lodging
+    differs by trip mode, so a multi-mode score fetches this once and passes it to
+    each score_town(shared=...) call.
+
+    "attractions" starts as None and is filled by the first score_town that needs it
+    (a town with no lodging and no food never pays for the attractions search)."""
+    keep_here = _nearest_filter(name, lat, lon, anchors)
+    food, _ = _gather(lat, lon, places.FOOD_TYPES, TOP_N_FOOD, keep_here=keep_here)
+    return {"food": food, "attractions": None}
+
+
+def score_town(name: str, lat: float, lon: float, mode: str, anchors=None,
+               shared=None) -> dict:
     """Independent per-town score (cacheable): its own lodging/food within radius.
 
     anchors: [(town_name, lat, lon), ...] of nearby reference towns. When given,
     each venue is attributed to its nearest anchor, so a town only scores on the
     venues physically closest to it (a neighbour's motel/restaurant/attraction no
-    longer counts here). None = no attribution (single-town CLI use)."""
+    longer counts here). None = no attribution (single-town CLI use).
+
+    shared: gather_shared() output for this town (same anchors), reused across
+    modes. None = gather it here."""
+    if shared is None:
+        shared = gather_shared(name, lat, lon, anchors)
     keep_here = _nearest_filter(name, lat, lon, anchors)
     lodging_types = list(places.LODGING_TYPES)
     lodging_excl = list(places.LODGING_EXCLUDE_TYPES)
@@ -36,19 +54,15 @@ def score_town(name: str, lat: float, lon: float, mode: str, anchors=None) -> di
         lodging_excl += places.LODGING_BNB_TYPES
     lodging, _ = _gather(lat, lon, lodging_types, TOP_N_LODGING,
                          excluded_types=lodging_excl, keep_here=keep_here)
-    food, _ = _gather(lat, lon, places.FOOD_TYPES, TOP_N_FOOD, keep_here=keep_here)
+    food = shared["food"]
     if not lodging and not food:
         return {
             "total": 0, "band": "filter-out", "scores": {}, "best_lodging": None,
             "food": [], "reason": "No independent lodging or food found.", "tip": "",
         }
-    attractions = places.search_nearby(
-        lat, lon, places.ATTRACTION_TYPES, radius_m=8000.0, max_results=15
-    )
-    if keep_here is not None:
-        attractions = [a for a in attractions
-                       if a.get("lat") is None or keep_here(a["lat"], a["lon"])]
-    r = _judge(name, lodging, food, attractions, mode)
+    if shared["attractions"] is None:
+        shared["attractions"] = _attractions(lat, lon, keep_here)
+    r = _judge(name, lodging, food, shared["attractions"], mode)
     # Tag every named place with its coords (matched from the detail lists), for
     # dedupe + so each location gets a Street View link / GPS coords in the UI.
     bl = r.get("best_lodging") or {}
@@ -109,6 +123,16 @@ def area_search(center: str, radius_mi: float, mode: str, limit: int | None = No
         also = f"   (+{len(others)} satellites: {', '.join(others)})" if others else ""
         print(f"{r.get('total'):>4}/10  [{r.get('band'):<12}] {c['name']+', '+c['state']:<22}"
               f" ({c['mi']:.0f} mi)  {blname or ''}{also}")
+
+
+def _attractions(lat, lon, keep_here):
+    attractions = places.search_nearby(
+        lat, lon, places.ATTRACTION_TYPES, radius_m=8000.0, max_results=15
+    )
+    if keep_here is not None:
+        attractions = [a for a in attractions
+                       if a.get("lat") is None or keep_here(a["lat"], a["lon"])]
+    return attractions
 
 
 def _nearest_filter(name, lat, lon, anchors):

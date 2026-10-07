@@ -273,10 +273,15 @@ def _claim_next(conn):
 def _score_modes(t, modes, anchors):
     """Pure API work (no DB) so it's safe to run in a pool thread: score this town
     in each still-needed mode. Returns [(mode, verdict), ...]. `anchors` is the
-    area's town set for nearest-town venue attribution (no neighbour borrowing)."""
+    area's town set for nearest-town venue attribution (no neighbour borrowing).
+    Food + attractions don't depend on mode, so they're fetched once and shared."""
+    if not modes:
+        return []
+    shared = area.gather_shared(t["name"], t["lat"], t["lon"], anchors)
     out = []
     for mode in modes:
-        out.append((mode, area.score_town(t["name"], t["lat"], t["lon"], mode, anchors=anchors)))
+        out.append((mode, area.score_town(t["name"], t["lat"], t["lon"], mode,
+                                          anchors=anchors, shared=shared)))
     return out
 
 
