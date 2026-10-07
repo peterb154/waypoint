@@ -11,7 +11,9 @@ candidates, then Place Details only on survivors of the chain filter.
 from __future__ import annotations
 
 import os
+import threading
 import time
+from collections import Counter
 
 import httpx
 
@@ -21,6 +23,17 @@ PLACES_BASE = "https://places.googleapis.com/v1"
 # (this deployment's container DNS is intermittently flaky). Bursty re-scores and
 # concurrent sweeps both lean on this.
 _RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+# Billable Places calls (successful responses) since process start. The sweep
+# worker logs the per-job delta so a sweep's real cost can be audited.
+CALLS: Counter = Counter()
+_calls_lock = threading.Lock()
+
+
+def _count(kind: str) -> None:
+    with _calls_lock:
+        CALLS[kind] += 1
 
 
 class QuotaExhausted(RuntimeError):
@@ -199,6 +212,7 @@ def search_nearby(
         timeout=30,
     ))
     resp.raise_for_status()
+    _count("search")
     out = []
     for p in resp.json().get("places", []):
         out.append(
@@ -241,6 +255,7 @@ def place_details(place_id: str) -> dict:
         timeout=30,
     ))
     resp.raise_for_status()
+    _count("details")
     p = resp.json()
     reviews = []
     for r in p.get("reviews", [])[:5]:
