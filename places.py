@@ -29,9 +29,20 @@ class QuotaExhausted(RuntimeError):
 
 
 def _is_daily_quota(resp) -> bool:
-    # Google's 429 body names the limit, e.g. "... limit 'SearchNearby requests per
-    # day' ..." — per-minute limits are worth retrying, per-day ones are not.
-    return resp.status_code == 429 and "per day" in resp.text.lower()
+    """A 429 for a per-day limit (worth stopping on), not a per-minute one (worth
+    retrying). Google's body carries the limit in ErrorInfo metadata, e.g.
+    quota_limit "SearchNearbyRequestPerDayPerProject", and in the message text,
+    e.g. "limit 'SearchNearby requests per day'" — check both."""
+    if resp.status_code != 429:
+        return False
+    try:
+        details = resp.json().get("error", {}).get("details", [])
+    except ValueError:
+        details = []
+    for d in details:
+        if "perday" in str((d.get("metadata") or {}).get("quota_limit", "")).lower():
+            return True
+    return "per day" in resp.text.lower()
 
 
 def _send_with_retry(send, *, tries: int = 6, base: float = 1.0, cap: float = 30.0):
@@ -49,8 +60,8 @@ def _send_with_retry(send, *, tries: int = 6, base: float = 1.0, cap: float = 30
             time.sleep(min(base * (2 ** attempt), cap))
             continue
         if _is_daily_quota(resp):
-            raise QuotaExhausted("Daily Google Places quota reached — resets at midnight "
-                                 "Pacific. Re-queue the sweep then.")
+            raise QuotaExhausted("Daily Google Places quota reached (resets midnight "
+                                 "Pacific).")
         if resp.status_code in _RETRY_STATUS and attempt < tries - 1:
             ra = resp.headers.get("Retry-After", "")
             delay = float(ra) if ra.replace(".", "", 1).isdigit() else base * (2 ** attempt)

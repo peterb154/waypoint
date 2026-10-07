@@ -416,8 +416,8 @@ function renderQueue() {
                 : j.status === "pending" ? "queued" : j.status;
     const x = j.status === "pending" ? `<span class="qx" data-cancel="${j.id}" title="cancel">✕</span>` : "";
     const bar = j.status === "running" ? `<div class="qbar"><i style="width:${pct}%"></i></div>` : "";
-    // Why a job failed (e.g. the daily Places quota), not just "error".
-    const err = j.status === "error" && j.error
+    // Why a job failed or is parked (e.g. the daily Places quota).
+    const err = j.status !== "done" && j.error
       ? `<div class="qerr">${j.error.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`)}</div>` : "";
     return `<div><div class="qrow"><span>${icon[j.status] || "•"}</span>` +
            `<span>${(+j.radius_mi)}mi · ${label}</span>${x}</div>${bar}${err}</div>`;

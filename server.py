@@ -43,6 +43,10 @@ SWEEP_CONCURRENCY = int(os.environ.get("SWEEP_CONCURRENCY", "5"))
 # and attractions are shared across modes and details are cached (issue #8).
 EST_USD_PER_SCORE = float(os.environ.get("EST_USD_PER_SCORE", "0.10"))
 
+# How long the sweep worker waits after hitting the daily Places quota before
+# trying the queue again (the cap resets at midnight Pacific).
+QUOTA_PAUSE_S = int(os.environ.get("QUOTA_PAUSE_S", "3600"))
+
 app = FastAPI(title="waypoint")
 
 
@@ -310,28 +314,35 @@ def _run_job(conn, job_id, lat, lon, radius):
     # APIs plus the Place Details cache (its own short-lived connection per call);
     # they never use `conn` — verdict/job writes stay here on the main thread.
     done = 0
+    quota = None
     with ThreadPoolExecutor(max_workers=SWEEP_CONCURRENCY) as ex:
         futs = {ex.submit(_score_modes, t, modes, anchors): t for t, modes in work}
         for fut in as_completed(futs):
+            if fut.cancelled():
+                continue
             t = futs[fut]
             results, err = fut.result()
+            # Store whatever finished — even after a quota hit, in-flight towns are paid for.
             for mode, r in results:
                 cache.store_verdict(conn, t["name"], t["state"], t["geoid"], mode,
                                     t["lat"], t["lon"], r)
             if isinstance(err, places.QuotaExhausted):
-                # No point scoring the rest today; the worker loop marks the job
-                # 'error' with this message, which the sweep queue shows.
-                ex.shutdown(wait=False, cancel_futures=True)
-                raise err
+                if quota is None:  # no point starting more towns today
+                    quota = err
+                    for f in futs:
+                        f.cancel()
+                continue
             if err:  # transient Places/Bedrock errors shouldn't kill the job
                 print(f"[worker] job {job_id} {t['name']}, {t['state']}: "
                       f"{type(err).__name__}: {str(err)[:80]} — skipping")
             done += 1
             with conn.cursor() as cur:
                 cur.execute("UPDATE sweep_jobs SET towns_done = %s WHERE id = %s", [done, job_id])
+    if quota:
+        raise quota  # the worker loop parks the job until the quota resets
     with conn.cursor() as cur:
-        cur.execute("UPDATE sweep_jobs SET status = 'done', finished_at = now() WHERE id = %s",
-                    [job_id])
+        cur.execute("UPDATE sweep_jobs SET status = 'done', error = NULL, finished_at = now() "
+                    "WHERE id = %s", [job_id])
 
 
 def _worker_loop():
@@ -353,6 +364,19 @@ def _worker_loop():
                 time.sleep(2)
                 continue
             _run_job(conn, *job)
+        except places.QuotaExhausted as e:
+            # Out of Places quota for the day: put the job back in the queue (with the
+            # reason, which the sweep queue shows) and pause, rather than failing it and
+            # then every other queued job in turn. Over-quota 429s aren't billed.
+            print(f"[worker] job {job[0]}: {e} — pausing {QUOTA_PAUSE_S}s")
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE sweep_jobs SET status = 'pending', started_at = NULL, "
+                                "towns_done = 0, error = %s WHERE id = %s",
+                                [f"{e} Paused; retrying hourly.", job[0]])
+            except Exception as db_err:  # same as below: never let bookkeeping kill the worker
+                print(f"[worker] couldn't park job {job[0]}: {db_err}")
+            time.sleep(QUOTA_PAUSE_S)
         except Exception as e:  # keep the worker alive across unexpected failures
             print(f"[worker] error: {type(e).__name__}: {e}")
             if job:

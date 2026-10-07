@@ -3,6 +3,9 @@ stub details, stops the sweep job, and keeps any verdict already scored."""
 
 from __future__ import annotations
 
+import json
+import threading
+
 import httpx
 import pytest
 
@@ -12,8 +15,21 @@ import places
 import server
 import verdict
 
-DAILY_429 = ("Quota exceeded for quota metric 'GetPlace requests' and limit "
-             "'GetPlace requests per day' of service 'places.googleapis.com'")
+# The shape of Google's per-day quota 429 (google.rpc.Status + ErrorInfo).
+DAILY_429 = json.dumps({"error": {
+    "code": 429, "status": "RESOURCE_EXHAUSTED",
+    "message": "Quota exceeded for quota metric 'GetPlace requests' and limit 'GetPlace "
+               "requests per day' of service 'places.googleapis.com' for consumer "
+               "'project_number:1'.",
+    "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                 "reason": "RATE_LIMIT_EXCEEDED", "domain": "googleapis.com",
+                 "metadata": {"quota_limit": "GetPlaceRequestPerDayPerProject",
+                              "service": "places.googleapis.com"}}],
+}})
+PER_MINUTE_429 = json.dumps({"error": {
+    "code": 429, "status": "RESOURCE_EXHAUSTED", "message": "Quota exceeded (per minute).",
+    "details": [{"metadata": {"quota_limit": "SearchNearbyRequestPerMinutePerProject"}}],
+}})
 
 
 def _resp(status, text=""):
@@ -28,9 +44,15 @@ def test_daily_quota_429_raises_without_retry(monkeypatch):
     assert len(sends) == 1
 
 
+def test_daily_quota_detected_from_metadata_alone():
+    body = json.dumps({"error": {"code": 429, "message": "Quota exceeded.", "details": [
+        {"metadata": {"quota_limit": "SearchNearbyRequestPerDayPerProject"}}]}})
+    assert places._is_daily_quota(_resp(429, body))
+
+
 def test_per_minute_429_still_retries(monkeypatch):
     monkeypatch.setattr(places.time, "sleep", lambda s: None)
-    replies = iter([_resp(429, "per minute"), _resp(200, "{}")])
+    replies = iter([_resp(429, PER_MINUTE_429), _resp(200, "{}")])
     assert places._send_with_retry(lambda: next(replies)).status_code == 200
 
 
@@ -61,6 +83,9 @@ def test_second_mode_failure_keeps_first_verdict(monkeypatch):
 
 
 class _Conn:
+    def __init__(self):
+        self.sql = []
+
     def cursor(self):
         return self
 
@@ -71,18 +96,49 @@ class _Conn:
         return False
 
     def execute(self, sql, params=None):
-        self.last = sql
+        self.sql.append(sql)
 
 
-def test_quota_stops_job_after_storing_partial(monkeypatch):
-    towns = [{"name": "A", "state": "KS", "geoid": "1", "lat": 1, "lon": 2}]
-    stored = []
+def _towns(*names):
+    return [{"name": n, "state": "KS", "geoid": n, "lat": 1, "lon": 2} for n in names]
+
+
+def _patch_cache(monkeypatch, towns, stored):
     monkeypatch.setattr(cache, "towns_within", lambda *a, **kw: towns)
     monkeypatch.setattr(cache, "get_cached", lambda *a, **kw: None)
     monkeypatch.setattr(cache, "store_verdict",
-                        lambda conn, town, st, g, mode, *a: stored.append(mode))
-    monkeypatch.setattr(server, "_score_modes", lambda t, modes, anchors: (
-        [("moto", {"total": 6})], places.QuotaExhausted("quota")))
+                        lambda conn, town, st, g, mode, *a: stored.append((town, mode)))
+
+
+def test_quota_stops_job_but_stores_in_flight_towns(monkeypatch):
+    # A hits quota after scoring moto; B is mid-flight and finishes after. Both
+    # towns' finished verdicts must be stored before the job stops.
+    stored = []
+    _patch_cache(monkeypatch, _towns("A", "B"), stored)
+    a_done, b_started = threading.Event(), threading.Event()
+
+    def score_modes(t, modes, anchors):
+        if t["name"] == "A":
+            b_started.wait(2)
+            a_done.set()
+            return [("moto", {"total": 6})], places.QuotaExhausted("quota")
+        b_started.set()
+        a_done.wait(2)
+        return [("moto", {"total": 5}), ("couple", {"total": 7})], None
+
+    monkeypatch.setattr(server, "_score_modes", score_modes)
     with pytest.raises(places.QuotaExhausted):
         server._run_job(_Conn(), 1, 1, 2, 10)
-    assert stored == ["moto"]
+    assert sorted(stored) == [("A", "moto"), ("B", "couple"), ("B", "moto")]
+
+
+def test_ordinary_error_skips_town_and_job_finishes(monkeypatch):
+    stored = []
+    _patch_cache(monkeypatch, _towns("A", "B"), stored)
+    monkeypatch.setattr(server, "_score_modes", lambda t, modes, anchors: (
+        ([], ValueError("bedrock hiccup")) if t["name"] == "A"
+        else ([("moto", {"total": 5})], None)))
+    conn = _Conn()
+    server._run_job(conn, 1, 1, 2, 10)
+    assert stored == [("B", "moto")]
+    assert any("status = 'done'" in q for q in conn.sql)
