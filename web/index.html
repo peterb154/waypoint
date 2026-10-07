@@ -196,9 +196,15 @@ const DIMS = [
 ];
 const map = L.map("map", { zoomControl: false }).setView([44, -90], 5);
 L.control.zoom({ position: "topright" }).addTo(map);
-L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-  attribution: "&copy; OpenStreetMap &copy; CARTO", maxZoom: 19,
-}).addTo(map);
+// Esri Dark Gray Canvas (base + labels). CARTO's free dark_all tiles started
+// serving an "API KEY REQUIRED" watermark (2026-10); Esri's are keyless.
+const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas";
+for (const layer of ["World_Dark_Gray_Base", "World_Dark_Gray_Reference"]) {
+  L.tileLayer(`${ESRI}/${layer}/MapServer/tile/{z}/{y}/{x}`, {
+    attribution: "Tiles &copy; Esri &mdash; Esri, HERE, Garmin, &copy; OpenStreetMap contributors",
+    maxNativeZoom: 16, maxZoom: 19,
+  }).addTo(map);
+}
 
 const off = new Set();           // bands toggled off (moto/couple views)
 let view = "moto";               // moto | couple | lunch  (one at a time)
