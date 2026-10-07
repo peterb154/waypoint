@@ -61,3 +61,23 @@ def test_single_mode_cli_path_still_gathers(monkeypatch):
     calls = _fake_places(monkeypatch)
     area.score_town(TOWN["name"], TOWN["lat"], TOWN["lon"], "couple")
     assert sorted(calls["search"]) == ["attractions", "food", "lodging"]
+
+
+def test_attractions_fetched_once_when_only_second_mode_reaches_judge(monkeypatch):
+    # Moto finds nothing (no food, B&B types excluded) -> filter-out; couple finds a
+    # B&B, so the lazy attractions fetch happens on the second mode, exactly once.
+    calls = _fake_places(monkeypatch, empty=("food",))
+    real = places.search_nearby
+
+    def search_nearby(lat, lon, included_types, **kw):
+        if "bed_and_breakfast" not in included_types and included_types not in (
+                places.FOOD_TYPES, places.ATTRACTION_TYPES):
+            calls["search"].append("lodging")
+            return []  # moto lodging: nothing
+        return real(lat, lon, included_types, **kw)
+
+    monkeypatch.setattr(places, "search_nearby", search_nearby)
+    out = dict(server._score_modes(TOWN, ["moto", "couple"], anchors=None))
+    assert out["moto"]["band"] == "filter-out"
+    assert out["couple"]["band"] == "acceptable"
+    assert calls["search"].count("attractions") == 1
